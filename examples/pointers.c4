@@ -1,0 +1,12 @@
+proc printf(fmt: ^x8,x: ^x32, y: x32) -> void;
+
+plex temp {
+  x: ^x32,
+}
+proc main() -> void {
+  let y: x32 = 6969;
+  let x: temp = temp{ &y };
+  let x_x: ^x32 = x.x;
+  let x_x_dref: x32 = x.x.^;
+  printf("x is %p and value is %d\n", x_x, x_x_dref);
+}
