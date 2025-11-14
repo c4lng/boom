@@ -2,12 +2,14 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Ast = @import("../ast.zig");
+const TypeCheck = @import("../type_check.zig");
 const StringBuilder = @import("../string_builder.zig");
 const common = @import("./common.zig");
 const CompiledExpression = common.CompiledExpression;
 const CompiledExprStack = CompiledExpression.CompiledExprStack;
 const CompiledExprLiteral = CompiledExpression.CompiledExprLiteral;
 const CompiledExpCommon = CompiledExpression.CompiledExpCommon;
+const CompiledExprField = CompiledExpression.CompiledExprField;
 
 allocator: Allocator,
 program_builder: StringBuilder,
@@ -94,7 +96,7 @@ pub fn get_size_of_int_literal(int_literal: u64) u32 {
     const n_bytes: u16 = std.math.divCeil(u16, @intCast(n_bits), 8) catch unreachable;
     return n_bytes;
 }
-pub fn get_inst_postfix_based_on_size(size: u8) []const u8 {
+pub fn get_int_mnemonic_based_on_size(size: u8) []const u8 {
     return switch (size) {
         1 => "b",
         2 => "w",
@@ -102,6 +104,78 @@ pub fn get_inst_postfix_based_on_size(size: u8) []const u8 {
         8 => "q",
         else => unreachable,
     };
+}
+pub fn compile_field_access(
+    self: *Self,
+    module: *Ast.Module,
+    block: *Ast.Block,
+    field: CompiledExprField,
+    storage: ?*Storage,
+    register: []const u8,
+    register_size: ?u32,
+) !struct { CompiledExpression, []const u8 } {
+    var ret = try self.compile_expr(module, block, field.access.expr, storage);
+    var expr_compiled: []const u8 = undefined;
+    if (ret == .PlexLiteral) assert(ret.PlexLiteral.storage_type == .Stack); // we don't support calls at all
+
+    var field_it = field.access.field;
+    var fld_offset: u32 = 0;
+    var fld_size: u32 = 0;
+    // man this is the worst code I've ever written
+    var is_last_fld_deref: bool = false;
+    while (field_it) |fld| {
+        defer field_it = fld.next;
+        is_last_fld_deref = fld.kind == .Deref;
+
+        switch (fld.kind) {
+            .Member => {
+                fld_offset += fld.field_offset;
+                fld_size = fld.field_size;
+            },
+            .Deref => |deref| {
+                ret, expr_compiled = try self.compiled_expr_to_asm(module, block, storage, ret, register, register_size);
+                var original_type = deref;
+                original_type.info.ptr_depth -= 1;
+                const original_size = (try TypeCheck.get_type_size_if_exists2(module, &original_type)).?;
+                // TODO(shahzad): @bug we don't support dereferencing plex
+                switch (ret) {
+                    .Register => |compiled_expr_as_reg| {
+                        const pointer_reg = self.get_register_based_on_size(compiled_expr_as_reg.expr, 8);
+                        expr_compiled = self.get_register_based_on_size(compiled_expr_as_reg.expr, original_size);
+                        // TODO(shahzad): @fixme we completely ignoring any non integer dereference :sob:
+                        const mnemonic = get_int_mnemonic_based_on_size(@intCast(original_size));
+                        _ = try self.program_builder.append_fmt("   mov{s} (%{s}), %{s}\n", .{ mnemonic, pointer_reg, expr_compiled });
+                        expr_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr_compiled});
+                        // TODO(shahzad)!!!!!: what about variable that holds a plex????_
+                    },
+                    else => std.debug.panic("deref for {} is not implemented!\n", .{ret}),
+                }
+            },
+        }
+    }
+    if (!is_last_fld_deref)
+        ret, expr_compiled = try self.compiled_expr_to_asm(module, block, storage, ret, register, register_size);
+    return .{ ret, expr_compiled };
+}
+pub fn compile_reference(self: *Self, module: *Ast.Module, block: *Ast.Block, compiled_expr: CompiledExpression, register: []const u8) anyerror!CompiledExpression {
+    _ = module;
+    _ = block;
+    const reg = self.get_register_based_on_size(register, 8);
+    switch (compiled_expr) {
+        .Var => |compiled_expr_as_var| {
+            _ = try self.program_builder.append_fmt("   leaq -{}(%rbp), %{s}\n", .{ compiled_expr_as_var.offset, reg });
+            return .{ .Register = .{ .expr = register, .size = 8 } };
+        },
+        .Field => {
+            unreachable;
+        },
+        .LitStr, .LitInt, .Call, .PlexLiteral, .Register => {
+            // TODO(shahzad): @feat need to create temp variable for this, in type check add
+            // code to create temp variables when reference to r values
+            @panic("unimplemented");
+        },
+        .Reference => unreachable,
+    }
 }
 pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *const Ast.Expression.PlexDef, storage: *Storage) anyerror!void {
     if (storage.storage_type == .CallArg) @panic("we are cooked");
@@ -111,7 +185,7 @@ pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *
         // TODO(shahzad): @bug recursive plex compilation
         const field_size: u8 = @intCast(plex_decl.?.fields.items[i].size);
         const byte_storage = try storage.get_next(&self.scratch_buffer, field_size);
-        const postfix = get_inst_postfix_based_on_size(field_size);
+        const postfix = get_int_mnemonic_based_on_size(field_size);
         var lhs_compiled: []const u8 = undefined;
         switch (compiled_expr) {
             .Var => |expr| {
@@ -136,6 +210,12 @@ pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *
                 _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr, register });
                 lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
             },
+            .Reference => |expr| {
+                _ = try self.compile_reference(module, block, expr.*, "d");
+                const register = self.get_register_based_on_size("d", 8);
+                lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
+            },
+
             .Field => @panic("unhandled"),
             // TODO(shahzad): this should be that hard but i am tired as shit
             .PlexLiteral => @panic("recursive plex literals are not supported as of now"),
@@ -163,14 +243,19 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             return .{ .Var = .{ .offset = stack_offset, .size = stack_var.?.meta.size } };
         },
         .FieldAccess => |*field_access| {
-            // TODO(shahzad): @fixme we don't support pointers to struct :sob:
+            // TODO(shahzad): @fixme we don't support pointers to plex :sob:
             return .{ .Field = .{ .access = field_access.* } };
+        },
+        .Reference => |*ref| {
+            const ref_expr_duped = try self.allocator.create(CompiledExpression);
+            ref_expr_duped.* = try self.compile_expr(module, block, ref.*, storage);
+            return .{ .Reference = ref_expr_duped };
         },
         .Plex => |plex| {
             assert(storage != null);
             const storage_type, const offset = storage.?.mark();
             try self.compile_plex(module, block, &plex, storage.?);
-            // TODO(shahzad): @bug support struct literals initialization
+            // TODO(shahzad): @bug support plex literals initialization
             return .{ .PlexLiteral = .{ .storage_type = storage_type, .start = offset } };
         },
         .Call => |call_expr| {
@@ -206,6 +291,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                             // _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ compiled_expr.expr, register });
                         }
                     },
+                    .Reference => @panic("unimplemented!"),
                     .PlexLiteral => {
                         unreachable;
                     },
@@ -331,7 +417,7 @@ fn load_int_literal_to_register(self: *Self, expr: CompiledExprLiteral, register
 fn compile_mov_reg_inst(self: *Self, src: CompiledExpCommon, dest: []const u8) ![]const u8 {
     const rhs = self.get_register_based_on_size(src.expr, src.size);
     const lhs = self.get_register_based_on_size(dest, src.size);
-    _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ rhs, lhs });
+    _ = try self.program_builder.append_fmt("   mov %{s}, %{s} #why is this getting called\n", .{ rhs, lhs });
     return lhs;
 }
 
@@ -358,8 +444,9 @@ pub fn compiled_expr_to_asm(
     compiled_expr: CompiledExpression,
     register: []const u8,
     register_size: ?u32,
-) !struct { CompiledExpression, []const u8 } {
+) anyerror!struct { CompiledExpression, []const u8 } {
     var expr_compiled: []const u8 = undefined;
+
     const ret: CompiledExpression = blk: switch (compiled_expr) {
         .LitInt => |expr| {
             const reg = try self.load_int_literal_to_register(expr, register);
@@ -367,13 +454,13 @@ pub fn compiled_expr_to_asm(
             break :blk .{ .Register = .{ .expr = register, .size = expr.size } };
         },
         .Var => |expr| {
-            std.debug.print("expr {} {}\n", .{expr.offset, expr.size});
+            std.debug.print("expr {} {}\n", .{ expr.offset, expr.size });
             var reg = try self.load_variable_to_register(expr, register);
             var ret_size = expr.size;
             if (expr.size <= 4) {
                 ret_size = 4;
                 const extended_reg = self.get_register_based_on_size(register, 4);
-                const lhs_mnemonic = get_inst_postfix_based_on_size(@intCast(expr.size));
+                const lhs_mnemonic = get_int_mnemonic_based_on_size(@intCast(expr.size));
                 _ = try self.program_builder.append_fmt("   movz{s} %{s}, %{s} # extending\n", .{ lhs_mnemonic, reg, extended_reg });
                 reg = extended_reg;
             }
@@ -395,31 +482,18 @@ pub fn compiled_expr_to_asm(
             break :blk .{ .Register = .{ .expr = "unreachable you cannot assign to strlit", .size = 8 } };
         },
         .PlexLiteral => |plex_lit| {
-            _ = try self.program_builder.append_fmt("   xor %rax,%rax # fix this hack\n", .{});
+            // _ = try self.program_builder.append_fmt("   xor %rax,%rax # fix this hack\n", .{});
             self.scratch_buffer.reset();
             break :blk .{ .PlexLiteral = plex_lit };
         },
         .Field => |field| {
-            var ret = try self.compile_expr(module, block, field.access.expr, storage);
-            if (ret == .PlexLiteral) assert(ret.PlexLiteral.storage_type == .Stack); // we don't support calls at all
-            switch (ret) {
-                .Var => |*var_compiled_expr| {
-                    var_compiled_expr.offset -= field.access.last_field_offset; // stack vars for plex store fields in inverse order
-                    var_compiled_expr.size = field.access.field_size;
-                },
-                .Call => |*compiled_expr_reg| {
-                    _ = compiled_expr_reg;
-                    // compiled_expr_reg.offset += field.access.last_field_offset;
-                    unreachable;
-                },
-                .PlexLiteral => |*compiled_expr_plex_lit| {
-                    compiled_expr_plex_lit.start += field.access.last_field_offset;
-                },
-                .Register => unreachable, // ts can never be a register
-                else => unreachable,
-            }
-            ret, expr_compiled = try self.compiled_expr_to_asm(module, block, storage, ret, register, register_size);
+            const ret, expr_compiled = try self.compile_field_access(module, block, field, storage, register, register_size);
             break :blk ret;
+        },
+        .Reference => |inner_expr| {
+            const ref_compiled = try self.compile_reference(module, block, inner_expr.*, register);
+            expr_compiled = try self.scratch_buffer.append_fmt("%{s}", .{self.get_register_based_on_size(register, 8)});
+            break :blk ref_compiled;
         },
     };
     return .{ ret, expr_compiled };
@@ -459,7 +533,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                     const lhs_size: u32 = if (lhs.get_size() <= 4) 4 else 8;
                     const register = self.get_register_based_on_size(expr.expr, lhs_size);
                     if (lhs == .Var and lhs_size <= 4) {
-                        const lhs_mnemonic = get_inst_postfix_based_on_size(@intCast(lhs_size));
+                        const lhs_mnemonic = get_int_mnemonic_based_on_size(@intCast(lhs_size));
                         _ = try self.program_builder.append_fmt("   mov{s} %{s}, %{s} # extending\n", .{ lhs_mnemonic, register, register });
                     }
                     const rhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{register});
@@ -471,7 +545,6 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
         },
         .LtEq, .GtEq, .Lt, .Gt, .Eq => {
             const lhs_size: u32 = if (lhs_compiled_expr.get_size() <= 4) 4 else 8;
-            std.debug.print("lhs size is {} and lhs is {s}\n", .{ lhs_compiled_expr.get_size(), lhs_compiled });
             break :blk try self.compiled_expr_to_asm(module, block, storage, rhs, "d", lhs_size);
         },
         else => break :blk try self.compiled_expr_to_asm(module, block, storage, rhs, "d", null),
@@ -502,7 +575,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
         },
         .Div => {
             // TODO(shahzad): support floating point divides
-            const mnemonic = get_inst_postfix_based_on_size(@intCast(rhs_compiled_expr.get_size()));
+            const mnemonic = get_int_mnemonic_based_on_size(@intCast(rhs_compiled_expr.get_size()));
             const b_reg = self.get_register_based_on_size("b", rhs_compiled_expr.get_size());
             _ = try self.program_builder.append_fmt("   #-----divide------\n", .{});
             _ = try self.program_builder.append_fmt("   mov{s} {s}, %{s}\n", .{ mnemonic, rhs_compiled, b_reg });
@@ -515,8 +588,8 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
             if (rhs != .PlexLiteral) {
                 ret = lhs_compiled_expr;
                 const lhs_size: u32 = if (lhs.get_size() <= 4) 4 else 8;
-                const lhs_mnemonic = get_inst_postfix_based_on_size(@intCast(lhs_size));
-                _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ lhs_mnemonic, rhs_compiled, lhs_compiled });
+                const lhs_mnemonic = get_int_mnemonic_based_on_size(@intCast(lhs_size));
+                _ = try self.program_builder.append_fmt("   mov{s} {s}, {s} # is this the culprit\n", .{ lhs_mnemonic, rhs_compiled, lhs_compiled });
             }
         },
         .Eq, .Lt => {

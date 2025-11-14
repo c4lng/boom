@@ -23,6 +23,7 @@ pub const CompiledExpression = union(enum) {
     };
 
     Var: CompiledExprStack,
+    Reference: *CompiledExpression,
     Field: CompiledExprField,
     PlexLiteral: CompiledExprPlex, // compile_plex takes storage as argument so we don't need to pass shit
     LitInt: CompiledExprLiteral,
@@ -38,6 +39,7 @@ pub const CompiledExpression = union(enum) {
             inline .LitStr, .Register, .Call => |compiled_expr| return compiled_expr.size,
             inline .Field => |compiled_expr| return compiled_expr.access.field_size,
             inline .PlexLiteral => unreachable,
+            inline .Reference => return 8,
         }
     }
 };

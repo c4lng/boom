@@ -51,6 +51,7 @@ pub const TokenKind = union(enum) {
     //identifier
     Ident: void,
     Pointer: void,
+    Reference: void,
 
     // native?
     ParenOpen: void,
@@ -111,6 +112,7 @@ pub const TokenKind = union(enum) {
             '*' => if (tok.len > 1 and tok[1] == '=') .{ 2, .{ .Op = .MulAss } } else .{ 1, .{ .Op = .Mul } },
             '/' => if (tok.len > 1 and tok[1] == '=') .{ 2, .{ .Op = .DivAss } } else .{ 1, .{ .Op = .Div } },
             '^' => .{ 1, .Pointer },
+            '&' => .{ 1, .Reference },
 
             'a'...'z', 'A'...'Z', '_' => blk: {
                 var ident_idx: usize = 0;
@@ -170,6 +172,7 @@ pub const TokenKind = union(enum) {
                 .GtEq => ">=",
             },
             .Pointer => "^",
+            .Reference => "&",
             .ParenOpen => "(",
             .ParenClose => ")",
             .CurlyOpen => "{",

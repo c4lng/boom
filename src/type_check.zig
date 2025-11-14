@@ -4,6 +4,10 @@ const Ast = @import("ast.zig");
 const assert = std.debug.assert;
 const SourceContext = Ast.SourceContext;
 
+const libc = @cImport({
+    @cInclude("stdio.h");
+});
+
 allocator: Allocator,
 context: SourceContext,
 const Self = @This();
@@ -44,7 +48,7 @@ const PrimitiveTypes = [_]struct { []const u8, u32 }{
 pub fn init(allocator: Allocator, context: SourceContext) Self {
     return .{ .context = context, .allocator = allocator };
 }
-fn get_size_for_user_defined_type(module: *const Ast.Module, @"type": Ast.ExprType) Self.Error!?usize {
+pub fn get_size_for_user_defined_type(module: *const Ast.Module, @"type": Ast.ExprType) Self.Error!?usize {
     const plex_decl = module.get_plex_decl(@"type".type);
     if (plex_decl) |decl| {
         if (@"type".info.ptr_depth > 0) return 8 else return decl.size;
@@ -52,7 +56,7 @@ fn get_size_for_user_defined_type(module: *const Ast.Module, @"type": Ast.ExprTy
 
     return Error.TypeNotFound;
 }
-fn get_size_for_primitive_type(@"type": Ast.ExprType) Self.Error!usize {
+pub fn get_size_for_primitive_type(@"type": Ast.ExprType) Self.Error!usize {
     if (std.mem.eql(u8, @"type".type, IntLiteralType)) {
         return @intCast(get_size_of_int_literal(@"type".info.int_lit));
     }
@@ -64,7 +68,7 @@ fn get_size_for_primitive_type(@"type": Ast.ExprType) Self.Error!usize {
     }
     return Error.TypeNotFound;
 }
-fn is_type_int_lit(@"type": Ast.ExprType) bool {
+pub fn is_type_int_lit(@"type": Ast.ExprType) bool {
     return std.mem.eql(u8, @"type".type, IntLiteralType);
 }
 pub fn get_size_of_int_literal(int_literal: u64) u32 {
@@ -123,8 +127,8 @@ pub fn type_check_proc_args(self: *Self, module: *Ast.Module, caller_block: *Ast
         std.log.debug("@TODO(shahzad): {s}:{}:{}: procedure call '{s}' contains more arguments than required! implement named args!!!!", .{ self.context.filename, n_lines, 0, proc_call.name });
     }
     for (params.items, 0..) |param, idx| {
-        const resolved_type = self.type_check_expr(module, caller_block, &proc_call.params.items[idx]) catch {
-            std.log.err("{s}:{}:{}: type of argument in procedure {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, proc_call.name, idx, param.decl.type.?.type, "unimplemented!" });
+        const resolved_type = self.type_check_expr(module, caller_block, &proc_call.params.items[idx]) catch |err| {
+            std.log.err("{s}:{}:{}: type of argument in procedure {s} on postion {} is '{s}', but given {s}, {}", .{ self.context.filename, n_lines, 0, proc_call.name, idx, param.decl.type.?.type, "unimplemented!", err });
             return false;
         };
 
@@ -205,7 +209,17 @@ fn is_expr_valid_lhs(expr: *Ast.Expression) bool {
     switch (expr.*) {
         .Var, .FieldAccess => return true,
         .BinOp => @panic("can bin op be lhs??"),
-        .Call, .Block, .IfCondition, .WhileLoop, .LiteralInt, .LiteralString, .NoOp, .Tuple, .Plex => {
+        .Call,
+        .Block,
+        .IfCondition,
+        .WhileLoop,
+        .LiteralInt,
+        .LiteralString,
+        .NoOp,
+        .Tuple,
+        .Plex,
+        .Reference,
+        => {
             return false;
         },
     }
@@ -215,23 +229,36 @@ pub fn type_check_field_expr(
     self: *Self,
     module: *Ast.Module,
     plex_type: Ast.ExprType,
-    field: *const Ast.FieldAccess.Field,
+    field: *Ast.FieldAccess.Field,
 ) !struct { u32, Ast.ExprType } { //offset and type
     var plex_type_it = plex_type;
-    var field_it: ?*const Ast.FieldAccess.Field = field;
+    var field_it: ?*Ast.FieldAccess.Field = field;
     var offset: u32 = 0;
+    var prev_fld = field;
     while (field_it) |fld| {
+        defer field_it = fld.next;
+        if (fld.kind == .Deref) {
+            fld.kind.Deref = plex_type_it;
+            if (plex_type_it.info.ptr_depth < 1) {
+                std.log.err("failed to dereference a non pointer type\n", .{});
+                self.context.print_loc(plex_type_it.type);
+                self.context.print_loc(prev_fld.kind.Member);
+                // ^ force because we only update it when it's not deref
+                _ = libc.printf("error:%*s^\n", 20 + @intFromPtr(plex_type_it.type.ptr), "");
+            }
+            plex_type_it.info.ptr_depth -= 1;
+            continue;
+        }
         const plex = module.get_plex_decl(plex_type_it.type) orelse {
             self.context.print_loc(plex_type.type);
             return Error.TypeNotFound;
         };
-        const field_meta_data = plex.get_field(fld.name) orelse {
-            self.context.print_loc(field.name);
+        prev_fld = field;
+        const field_meta_data = plex.get_field(fld.kind.Member) orelse {
+            self.context.print_loc(fld.kind.Member);
             return Error.UndefinedPlexField;
         };
         offset += field_meta_data.offset;
-        std.debug.print("offset is this shit my guy lesss gooo {}\n", .{offset});
-        field_it = fld.next;
         plex_type_it = field_meta_data.type;
     }
     return .{ offset, plex_type_it };
@@ -312,11 +339,11 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
             unreachable;
         },
         .LiteralInt => |expr_as_int_lit| {
-            // @TODO(shahzad): add something  in the literal int source to we can get the loc of it
-            // @TODO(shahzad)!!: add comptime overflow checks on maths ops
-            // @TODO(shahzad)!: add run time overflow checks on maths ops
+            // @TODO(shahzad): @fixme add something  in the literal int source to we can get the loc of it
+            // @TODO(shahzad)!!: @feat add comptime overflow checks on maths ops
+            // @TODO(shahzad)!: @feat add run time overflow checks on maths ops
 
-            // @NOTE(shahzad)!: Literal int is by default unsigned
+            // @NOTE(shahzad)!: @fixme Literal int is by default unsigned
 
             return .{ .type = IntLiteralType, .info = .{ .int_lit = expr_as_int_lit } };
         },
@@ -354,8 +381,19 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
             const offset, const typ = try self.type_check_field_expr(module, field_access_expr_type, field_access.field.?);
             field_access.last_field_offset = offset;
             field_access.field_size = @intCast((try self.get_type_size_if_exists(module, &typ)).?);
-            std.debug.print("typ {s}\n", .{typ.type});
             return typ;
+        },
+        .Reference => |ref| {
+            var expr_type = try self.type_check_expr(module, block, ref);
+            // TODO(shahzad): @feat should we support references to int literal?
+            // TODO(shahzad): @feat @bug we don't support more than one reference i.e.
+            // &&x or &&&x
+
+            // TODO(shahzad): @feat figure out a way to create temp variables when
+            // reference to r values
+            expr_type.info.ptr_depth += 1;
+
+            return expr_type;
         },
         // else => |unhandled| {
         //     std.log.err("type_check_expr is not implemented for {}\n", .{unhandled});
@@ -459,7 +497,16 @@ pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
         });
     }
 }
-fn get_type_size_if_exists(self: *Self, module: *const Ast.Module, expr_type: *const Ast.ExprType) Error!?usize {
+pub fn get_type_size_if_exists2(module: *const Ast.Module, expr_type: *const Ast.ExprType) Error!?usize {
+    var size: ?usize = get_size_for_primitive_type(expr_type.*) catch null;
+    if (size == null) {
+        const userdefined_size: ?usize = try get_size_for_user_defined_type(module, expr_type.*);
+        size = userdefined_size;
+    }
+    return size;
+}
+
+pub fn get_type_size_if_exists(self: *Self, module: *const Ast.Module, expr_type: *const Ast.ExprType) Error!?usize {
     var size: ?usize = get_size_for_primitive_type(expr_type.*) catch null;
     if (size == null) {
         const userdefined_size: ?usize = get_size_for_user_defined_type(module, expr_type.*) catch |err| {
@@ -518,7 +565,7 @@ pub fn type_check_argument_list(self: *Self, proc_decl: *Ast.ProcDecl) bool {
 pub fn type_check_proc_decl(self: *Self, module: *Ast.Module, proc_decl: *Ast.ProcDecl) !void {
     if (self.type_check_argument_list(proc_decl)) return Error.VariableRedefinition;
     const return_size = try self.get_type_size_if_exists(module, &proc_decl.return_type);
-    // NOTE(shahzad): this will happen when extern struct is used
+    // NOTE(shahzad): this will happen when extern plex is used
     if (return_size == null) @panic("size is defined but not typechecked!");
     proc_decl.return_size = return_size.?;
 }

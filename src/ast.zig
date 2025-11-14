@@ -86,12 +86,17 @@ pub const Module = struct {
 // TODO(shahzad): make this generic over unary op
 pub const FieldAccess = struct {
     pub const Field = struct {
-        name: []const u8,
+        kind: union(enum) {
+            Member: []const u8,
+            Deref: ExprType,
+        },
+        field_offset: u32,
+        field_size: u32,
         next: ?*@This(),
     };
     expr: *Expression,
     field: ?*Field,
-    last_field_offset: u32, // won't work with pointers
+    last_field_offset: u32, // remove this
     field_size: u32,
 };
 pub const BinaryOperation = struct {
@@ -108,13 +113,14 @@ pub const BinaryOperation = struct {
     }
 };
 
+// TODO(shahzad)!!!!: @bug arguments don't work after this shit :sob:
 pub const Block = struct {
     outer: ?*Block,
     stmts: ArrayListManaged(Statement),
     stack_vars: ArrayListManaged(StackVar), // populated in type checking phase
     stack_var_offset: usize = 0,
     const Self = @This();
-    pub fn find_variable(self: *Self, var_name: []const u8) ?StackVar {
+    pub fn find_variable_stack(self: *Self, var_name: []const u8) ?StackVar {
         for (self.stack_vars.items) |stack_var| {
             if (std.mem.eql(u8, stack_var.decl.name, var_name)) {
                 return stack_var;
@@ -130,6 +136,11 @@ pub const Block = struct {
             }
         }
         return null;
+    }
+    pub fn find_variable(self: *Self, var_name: []const u8) ?StackVar {
+        // find variable should not return a stack var cause the variable could be 
+        // an argument or a global variable
+        return self.find_variable_stack( var_name);
     }
 };
 pub const ConditionalExpression = struct {
@@ -157,6 +168,7 @@ pub const Expression = union(enum) {
     Block: *Block,
     BinOp: BinaryOperation,
     FieldAccess: FieldAccess,
+    Reference: *Expression,
 };
 pub const PlexField = struct {
     name: []const u8,
@@ -263,6 +275,15 @@ pub const ProcDecl = struct {
         // @TODO(shahzad): impl this function frfr
         return self.args_list;
     }
+    pub fn get_argument(self: *const Self, arg_name: []const u8) Argument {
+        // TODO(shahzad): @perf this is ass
+        for (self.args_list.items) |it| {
+            if (std.mem.eql(u8, it.decl.name, arg_name)) {
+                return it;
+            }
+        }
+        return null;
+    }
 };
 
 pub const ProcDef = struct {
@@ -275,7 +296,7 @@ pub const ProcDef = struct {
         return .{ .decl = decl, .block = block };
     }
     pub fn get_variable(self: *Self, var_name: []const u8) ?StackVar {
-        return self.block.find_local_variable(var_name);
+        return self.decl.get_argument(var_name) orelse self.block.find_local_variable(var_name);
     }
 };
 

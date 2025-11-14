@@ -104,7 +104,7 @@ pub const Parser = struct {
                 ptr_depth += 1;
             }
 
-            // TODO(shahzad): @feat add support for default struct fields
+            // TODO(shahzad): @feat add support for default plex fields
             const type_name = try self.expect(.Ident, "field name");
             const field_type: Ast.ExprType = .{ .type = type_name.source, .info = .{ .ptr_depth = ptr_depth } };
 
@@ -236,7 +236,17 @@ pub const Parser = struct {
                 }
             },
             // TODO(shahzad): @feat should we make plex a block too?
-            .Plex, .NoOp, .Var, .LiteralInt, .LiteralString, .Call, .Tuple, .BinOp, .FieldAccess => {},
+            .Plex,
+            .NoOp,
+            .Var,
+            .LiteralInt,
+            .LiteralString,
+            .Call,
+            .Tuple,
+            .BinOp,
+            .FieldAccess,
+            .Reference,
+            => {},
         }
     }
     fn parse_block(self: *Self) anyerror!*Ast.Block {
@@ -432,17 +442,22 @@ pub const Parser = struct {
 
     fn parse_field_access(self: *Self, first_expr: *Ast.Expression) anyerror!Ast.FieldAccess {
         var token = self.tokens.peek(0).?;
-        var top_field: Ast.FieldAccess = .{ .expr = first_expr, .field = null, .last_field_offset = undefined,.field_size = undefined };
+        var top_field: Ast.FieldAccess = .{ .expr = first_expr, .field = null, .last_field_offset = undefined, .field_size = undefined };
         var field_ptr: *?*Ast.FieldAccess.Field = &top_field.field;
         while (token.kind == .Dot) {
             self.tokens.advance(1);
             token = self.tokens.peek(0).?;
             // TODO(shahzad): @feat we can add optional unwrapping or dereferencing here
-            if (token.kind != .Ident) {
-                return Ast.Error.UnexpectedToken;
-            }
+            if (token.kind != .Ident or token.kind == .Pointer) {}
             var field = try self.allocator.create(Ast.FieldAccess.Field);
-            field.name = token.source;
+            errdefer self.allocator.destroy(field); //OCD
+
+            field.kind = switch (token.kind) {
+                .Ident => .{ .Member = token.source },
+                .Pointer => .{ .Deref = undefined },
+                else => return Ast.Error.UnexpectedToken,
+            };
+
             field.next = null;
 
             // absolute coding
@@ -597,6 +612,12 @@ pub const Parser = struct {
             },
             .CurlyOpen => {
                 expr = .{ .Block = try self.parse_block() };
+            },
+            .Reference => {
+                self.tokens.advance(1); // skip the token
+                const expr_duped = try self.allocator.create(Ast.Expression);
+                expr_duped.* = try self.parse_expr();
+                expr = .{ .Reference = expr_duped };
             },
             .ParenClose, .CurlyClose => expr = .NoOp,
 
