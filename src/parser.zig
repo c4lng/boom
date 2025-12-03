@@ -320,9 +320,6 @@ pub const Parser = struct {
                     self.tokens.advance(1);
                     expr = try self.parse_expr();
                 }
-
-                // @TODO(shahzad): add support for assignment during initialization of variable
-
                 _ = self.expect(.Semi, null) catch |err| {
                     self.tokens.peek(0).?.print_loc();
                     return err;
@@ -442,7 +439,7 @@ pub const Parser = struct {
 
     fn parse_field_access(self: *Self, first_expr: *Ast.Expression) anyerror!Ast.FieldAccess {
         var token = self.tokens.peek(0).?;
-        var top_field: Ast.FieldAccess = .{ .expr = first_expr, .field = null, .last_field_offset = undefined, .field_size = undefined };
+        var top_field: Ast.FieldAccess = .{ .expr = first_expr, .field = null, .last_field_size = undefined };
         var field_ptr: *?*Ast.FieldAccess.Field = &top_field.field;
         while (token.kind == .Dot) {
             self.tokens.advance(1);

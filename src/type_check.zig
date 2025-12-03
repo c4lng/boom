@@ -92,7 +92,7 @@ pub fn type_check_plex_def_block(self: *Self, module: *Ast.Module, caller_block:
     const fields = plex_decl.fields;
     const n_lines, _ = self.context.get_loc(plex_def.name);
     if (fields.items.len > plex_def.members.items.len) {
-        std.log.err("{s}:{}:{}: too few fields initialized to flex '{s}' expected {}, have {}", .{ self.context.filename, n_lines, 0, plex_def.name, fields.items.len, plex_def.members.items.len });
+        std.log.err("{s}:{}:{}: too few fields initialized to plex '{s}' expected {}, have {}", .{ self.context.filename, n_lines, 0, plex_def.name, fields.items.len, plex_def.members.items.len });
         return false;
     } else if (fields.items.len < plex_def.members.items.len) {
         std.log.err("@TODO(shahzad): {s}:{}:{}: plex definition '{s}' contains more fields than required!", .{ self.context.filename, n_lines, 0, plex_def.name });
@@ -109,7 +109,7 @@ pub fn type_check_plex_def_block(self: *Self, module: *Ast.Module, caller_block:
         };
 
         if (!can_type_resolve(field.type, resolved_type)) {
-            std.log.err("{s}:{}:{}: type of field in flex {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, plex_def.name, idx, field.type.type, resolved_type.type });
+            std.log.err("{s}:{}:{}: type of field in plex {s} on postion {} is '{s}', but given {s}", .{ self.context.filename, n_lines, 0, plex_def.name, idx, field.type.type, resolved_type.type });
             return false;
         }
     }
@@ -230,10 +230,9 @@ pub fn type_check_field_expr(
     module: *Ast.Module,
     plex_type: Ast.ExprType,
     field: *Ast.FieldAccess.Field,
-) !struct { u32, Ast.ExprType } { //offset and type
+) !Ast.ExprType { //offset and type
     var plex_type_it = plex_type;
     var field_it: ?*Ast.FieldAccess.Field = field;
-    var offset: u32 = 0;
     var prev_fld = field;
     while (field_it) |fld| {
         defer field_it = fld.next;
@@ -258,10 +257,11 @@ pub fn type_check_field_expr(
             self.context.print_loc(fld.kind.Member);
             return Error.UndefinedPlexField;
         };
-        offset += field_meta_data.offset;
+        fld.field_offset = field_meta_data.offset;
+        fld.field_size = field_meta_data.size;
         plex_type_it = field_meta_data.type;
     }
-    return .{ offset, plex_type_it };
+    return plex_type_it;
 }
 // check if the expr is correct with types and shit and also check if it can resolve to the given type
 pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expression: *Ast.Expression) !Ast.ExprType {
@@ -378,9 +378,8 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
         },
         .FieldAccess => |*field_access| {
             const field_access_expr_type = try self.type_check_expr(module, block, field_access.expr);
-            const offset, const typ = try self.type_check_field_expr(module, field_access_expr_type, field_access.field.?);
-            field_access.last_field_offset = offset;
-            field_access.field_size = @intCast((try self.get_type_size_if_exists(module, &typ)).?);
+            const typ = try self.type_check_field_expr(module, field_access_expr_type, field_access.field.?);
+            field_access.last_field_size = @intCast((try self.get_type_size_if_exists(module, &typ)).?);
             return typ;
         },
         .Reference => |ref| {
@@ -468,7 +467,8 @@ pub fn type_check_block(self: *Self, module: *Ast.Module, block: *Ast.Block, blo
             if (!std.meta.eql(var_def.expr, .NoOp)) {
                 const expr_type = try self.type_check_expr(module, block, &var_def.expr);
                 if (!can_type_resolve(var_def.type.?, expr_type)) {
-                    std.log.err("unable to resolve type {any} to {any}\n", .{ var_def.type, expr_type.type });
+                    std.log.err("unable to resolve type {s} to {s}\n", .{ (var_def.type orelse Ast.ExprType.default()).type, expr_type.type });
+
                     return error.TypeMisMatch;
                 }
             }

@@ -96,8 +96,7 @@ pub const FieldAccess = struct {
     };
     expr: *Expression,
     field: ?*Field,
-    last_field_offset: u32, // remove this
-    field_size: u32,
+    last_field_size: u32,
 };
 pub const BinaryOperation = struct {
     op: BinOp,
@@ -138,9 +137,9 @@ pub const Block = struct {
         return null;
     }
     pub fn find_variable(self: *Self, var_name: []const u8) ?StackVar {
-        // find variable should not return a stack var cause the variable could be 
+        // find variable should not return a stack var cause the variable could be
         // an argument or a global variable
-        return self.find_variable_stack( var_name);
+        return self.find_variable_stack(var_name);
     }
 };
 pub const ConditionalExpression = struct {
@@ -210,7 +209,10 @@ pub const Statement = union(enum) {
 pub const ExprType = struct {
     type: []const u8, // this should be in meta but fuck it
     info: union { ptr_depth: usize, int_lit: u64 }, // contains the depth or int literal
-
+    const Self = @This();
+    pub fn default() Self {
+        return .{ .type = "unknown", .info = undefined };
+    }
 };
 pub const VarDecl = struct {
     name: []const u8,

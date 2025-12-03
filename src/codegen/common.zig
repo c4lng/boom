@@ -37,7 +37,7 @@ pub const CompiledExpression = union(enum) {
             inline .Var => |compiled_expr| return compiled_expr.size,
             inline .LitInt => |compiled_expr| return compiled_expr.size,
             inline .LitStr, .Register, .Call => |compiled_expr| return compiled_expr.size,
-            inline .Field => |compiled_expr| return compiled_expr.access.field_size,
+            inline .Field => |_| unreachable,
             inline .PlexLiteral => unreachable,
             inline .Reference => return 8,
         }
