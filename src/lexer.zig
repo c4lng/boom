@@ -210,7 +210,7 @@ pub const Token = struct {
         const current_line = self.line;
         const current_token_start = (self.source.ptr - current_line.ptr);
 
-        std.debug.print("error: unexpected token: \"{s}\"\n", .{current_line});
+        std.log.err("error: unexpected token: \"{s}\"\n", .{current_line});
         std.log.err("{[value]s: >[width]}^\n", .{
             .value = "",
             .width = 20 + current_token_start,
@@ -256,7 +256,7 @@ pub const Lexer = struct {
                 switch (err) {
                     else => {
                         // @TODO(shahazd): better squigly line error reporting shit
-                        std.debug.print("error: failed to parse token: \"{s}\"\n", .{current_line});
+                        std.log.err("error: failed to parse token: \"{s}\"\n", .{current_line});
                         std.log.err("{[value]s: >[width]}^\n", .{
                             .value = "",
                             .width = 20 + current_token_start,

@@ -508,9 +508,9 @@ pub const Parser = struct {
         _ = self.tokens.consume();
         // parse the condition
         const cond = try self.parse_expr();
-        std.debug.print("condition {}\n", .{cond});
+        std.log.debug("condition {}\n", .{cond});
         const expr = try self.parse_expr();
-        std.debug.print("expression {}\n", .{expr});
+        std.log.debug("expression {}\n", .{expr});
         switch (expr) {
             .Block => {},
             else => _ = try self.expect(.Semi, ";"),
@@ -533,7 +533,7 @@ pub const Parser = struct {
                 .Block => {},
                 .IfCondition => {},
                 else => {
-                    std.debug.print("else_expr = {}\n", .{else_expr});
+                    std.log.debug("else_expr = {}\n", .{else_expr});
                     _ = try self.expect(.Semi, ";");
                 },
             }

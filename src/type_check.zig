@@ -175,14 +175,14 @@ pub fn type_check_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bi
     const asignee_type = try self.type_check_expr(module, block, bin_op_expr.lhs);
     if (is_type_int_lit(asignee_type)) {
         const int_lit = asignee_type.info.int_lit;
-        std.debug.print("asignee_type int_literal, literal: {}\n", .{int_lit});
-    } else std.debug.print("asignee_type {}\n", .{asignee_type});
+        std.log.debug("asignee_type int_literal, literal: {}\n", .{int_lit});
+    } else std.log.debug("asignee_type {}\n", .{asignee_type});
 
     const asigner_type = try self.type_check_expr(module, block, bin_op_expr.rhs);
     if (is_type_int_lit(asigner_type)) {
         const int_lit = asigner_type.info.int_lit;
-        std.debug.print("asigner_type int_literal, literal: {}\n", .{int_lit});
-    } else std.debug.print("asigner_type {}\n", .{asigner_type});
+        std.log.debug("asigner_type int_literal, literal: {}\n", .{int_lit});
+    } else std.log.debug("asigner_type {}\n", .{asigner_type});
 
     if (!can_type_resolve(asignee_type, asigner_type)) {
         std.log.err("unable to resolve type {s} to {s}\n", .{ asigner_type.type, asignee_type.type });
@@ -196,8 +196,8 @@ pub fn type_check_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bi
             asigner_type;
     if (is_type_int_lit(return_type)) {
         const int_lit = return_type.info.int_lit;
-        std.debug.print("BinOP returning int_literal literal: {}\n", .{int_lit});
-    } else std.debug.print("BinOP returning {}\n", .{return_type});
+        std.log.debug("BinOP returning int_literal literal: {}\n", .{int_lit});
+    } else std.log.debug("BinOP returning {}\n", .{return_type});
     return return_type;
 }
 

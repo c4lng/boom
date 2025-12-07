@@ -46,6 +46,9 @@ pub fn init(allocator: Allocator) Self {
     var arena = std.heap.ArenaAllocator.init(allocator);
     return .{ .allocator = allocator, .program_builder = .init(allocator), .scratch_buffer = .init(allocator), .string_arena = .init(arena.allocator()) };
 }
+pub inline fn get_generated_assembly(self: *const Self) []const u8 {
+    return self.program_builder.string.items;
+}
 fn _get_size_of_register(reg: []const u8) u16 {
     return switch (reg.len) {
         1 => unreachable,
@@ -130,7 +133,7 @@ pub fn compile_field_access(
         switch (fld.kind) {
             .Member => {
                 // TODO(shahzad): kinda unreachable
-                std.debug.print("fld is this {{ name: {s}, offset: {}, size: {} }}\n", .{ fld.kind.Member, fld.field_offset, fld.field_size });
+                std.log.debug("fld is this {{ name: {s}, offset: {}, size: {} }}\n", .{ fld.kind.Member, fld.field_offset, fld.field_size });
                 fld_offset += fld.field_offset;
                 fld_size = fld.field_size;
             },
@@ -165,7 +168,13 @@ pub fn compile_field_access(
                 expr_as_var.offset -= fld_offset;
                 expr_as_var.size = fld_size;
             },
-            else => unreachable,
+            .Register => {
+                // TODO(shahzad)!!!!!!: @bug we assume that every dereferenced type is 64 bit
+            },
+            else => {
+                std.log.err("man ts is ass {}\n", .{ret});
+                unreachable;
+            },
         }
         ret, expr_compiled = try self.compiled_expr_to_asm(module, block, storage, ret, register, register_size);
     }
@@ -218,7 +227,7 @@ pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *
                 lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr.expr});
             },
             .LitStr => |expr| {
-                std.debug.print("field_size {}\n", .{field_size});
+                std.log.err("field_size {}\n", .{field_size});
                 assert(field_size == 8);
                 const register = self.get_register_based_on_size("d", 8);
                 _ = try self.program_builder.append_fmt("   leaq {s}(%rip), %{s}\n", .{ expr.expr, register });
@@ -364,7 +373,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                 },
 
                 else => {
-                    std.debug.print("{} is not supported while compiling if conditions\n", .{compiled_expr});
+                    std.log.err("{} is not supported while compiling if conditions\n", .{compiled_expr});
                     unreachable;
                 },
             }
@@ -559,7 +568,7 @@ pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, 
                     const lhs_size: u32 = if (lhs.get_size() <= 4) 4 else 8;
                     // a register whose size matches with with lhs
                     const lhs_size_reg = self.get_register_based_on_size("d", lhs_size);
-                    std.debug.print("ret size is this {}\n", .{ret_size});
+                    std.log.debug("ret size is this {}\n", .{ret_size});
                     // zero extend
                     if (ret_size < 4) {
                         const mnemonic = get_int_mnemonic_based_on_size(@intCast(ret_size));
@@ -721,8 +730,4 @@ pub fn compile_mod(self: *Self, module: *Ast.Module) !void {
     for (module.proc_defs.items) |*proc| {
         try self.compile_proc(module, proc);
     }
-    std.debug.print("generated assembly", .{});
-    std.debug.print("--------------------------------------------------\n", .{});
-    std.debug.print("{s}\n", .{self.program_builder.string.items});
-    std.debug.print("--------------------------------------------------\n", .{});
 }
