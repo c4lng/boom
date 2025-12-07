@@ -1,0 +1,18 @@
+proc printf(fmt: ^x8, arg: x32) -> void;
+
+proc main() -> void {
+  let x: x32 = 9876;
+  {
+    let x: x32 = 1234;
+    {
+      let x: x32 = 5678;
+      {
+        let x: x32 = 1011;
+        printf("what is happening? %d\n",x);
+      }
+      printf("chat is this scope? %d\n",x);
+    }
+    printf("man this shit is good %d\n",x);
+  }
+  printf("variable number of scopes are you kidding me? %d\n",x);
+}

@@ -1,0 +1,12 @@
+proc printf(fmt: ^x8) -> void;
+proc main() -> void {
+  let a: x32 = 0;
+  let b: x32 = 1;
+  let c: x32 = 0;
+  while a < 1000 {
+    c = a + b;
+    b = a;
+    a = c;
+    printf("%d\n",a);
+  }
+}

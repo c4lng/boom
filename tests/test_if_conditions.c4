@@ -1,0 +1,13 @@
+proc printf(fmt: ^x8) -> void;
+proc main() -> void {
+  let a: x32 = 20;
+  let b: x32 = 10;
+  let c: x32 = 20;
+  if a == b  printf("a is b\n");
+  else if a == b + 10 printf("a is b + 10\n");
+  else printf("ts not tuff gng\n");
+ 
+  if a == c printf("a is c\n");
+  else printf("man else works\n");
+ 
+}

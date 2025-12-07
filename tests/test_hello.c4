@@ -1,0 +1,5 @@
+proc printf(fmt: ^x8) -> void;
+
+proc main() -> void {
+  printf("Hello,World!\n");
+}

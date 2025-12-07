@@ -1,0 +1,7 @@
+proc printf(fmt: ^x8, arg: x32) -> void;
+
+proc main() -> void {
+  let x : x32 = 6;
+  let z : x32 = 3;
+  printf("z is %d\n", x + 63 / z * 2);
+}

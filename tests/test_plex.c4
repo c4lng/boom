@@ -1,0 +1,33 @@
+plex nest3 {
+  t: x32,
+}
+plex nested2 {
+  r: nest3,
+  g: x8,
+  b: x8,
+  a: x8,
+  m: x8,
+}
+plex nested {
+  l: nested2,
+}
+plex Color {
+  l: nested,
+}
+
+proc printf(fmt: ^x8, r:x32) -> void;
+proc main() -> void {
+  let n3: nest3 = nest3{696969};
+  let n2: nested2 = nested2{n3,20,10,40,100};
+  let n1: nested = nested{n2};
+  let color: Color =  Color {n1};
+  let x: x32 = color.l.l.r.t;
+  let y: x8 = color.l.l.g;
+  let z: x8 = color.l.l.b;
+  let m: x8 = color.l.l.a;
+  printf("x is this %d\n",x);
+  printf("y is this %d\n",y);
+  printf("z is this %d\n",z);
+  printf("m is this %d\n",m);
+}
+

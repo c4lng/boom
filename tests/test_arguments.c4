@@ -1,0 +1,11 @@
+proc printf(fmt: ^x8, arg: x32) -> void; 
+
+proc temp(fmt: ^x8, arg: x32) -> void {
+  let _arg: x32 = arg;
+  printf(fmt, _arg + 35);
+}
+proc main() -> void {
+  let fmt: ^x8 = "sum is : %d \n";
+  let x : x32 = 34;
+  temp(fmt, x);
+}
