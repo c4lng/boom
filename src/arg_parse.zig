@@ -35,8 +35,8 @@ pub fn populate(self: *Self) !void {
         } else if (std.mem.eql(u8, flag.?, "-c")) {
             self.object_only = true;
         } else if (std.mem.eql(u8, flag.?, "-l")) {
-            // TODO(shahzad): only works with relative paths :sob:
-            // TODO(shahzad): this is ass :sob:
+            // TODO(shahzad): @bug only works with relative paths :sob:
+            // this is ass :sob:
             while (true) {
                 const name = iter.next();
                 if (name == null) break;

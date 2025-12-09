@@ -20,7 +20,7 @@ const Error = error{
     RecursiveDeclaration,
 };
 
-//TODO(shahzad): add a formatter here
+//TODO(shahzad): @refactor add a formatter here
 // NOTE(shahzad): we use this as IntLiteralType ++ int_literal
 const IntLiteralType = "\x00intlit";
 
@@ -113,7 +113,7 @@ pub fn type_check_plex_def_block(self: *Self, module: *Ast.Module, caller_block:
 }
 
 pub fn type_check_proc_args(self: *Self, module: *Ast.Module, caller_block: *Ast.Block, proc_call: *const Ast.Expression.ProcCall, proc_decl: *const Ast.ProcDecl) bool {
-    // @TODO(shahzad): better error reporting
+    // @TODO(shahzad): @context better error reporting
     const params = proc_decl.get_required_params();
     const n_lines, _ = self.context.get_loc(proc_call.name);
     if (params.items.len > proc_call.params.items.len) {
@@ -264,7 +264,7 @@ pub fn type_check_field_expr(
 }
 // check if the expr is correct with types and shit and also check if it can resolve to the given type
 pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expression: *Ast.Expression) !Ast.ExprType {
-    //TODO(shahzad): this is ass brother please fix it
+    //TODO(shahzad): @needContext this is ass brother please fix it
     switch (expression.*) {
         .Var => |expr_as_var| {
             const var_position, const variable = block.find_variable(expr_as_var) orelse {
@@ -318,7 +318,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
         },
 
         .Call => |*expr_as_call| {
-            // @TODO(shahzad): check if the return statement matches with the proc_decl.return_type
+            // @TODO(shahzad): @bug check if the return statement matches with the proc_decl.return_type
             const proc_decl = module.get_proc(expr_as_call.name);
             if (proc_decl == null) {
                 const n_lines, _ = self.context.get_loc(expr_as_call.name);
@@ -333,8 +333,6 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
             return proc_decl.?.return_type;
         },
         .NoOp, .Tuple => {
-            // @TODO(shahzad)!!!!!: this smells bad
-            // return "";
             unreachable;
         },
         .LiteralInt => |expr_as_int_lit| {
@@ -363,7 +361,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
                 );
                 _ = else_condition_expr_type;
             }
-            // TODO(shahzad): @feat check if type can resolve into each other
+            // TODO(shahzad): @feat @bug check if type can resolve into each other
             // shouldn't be that hard
             return if_condition_expr_type;
         },
@@ -403,7 +401,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
 
 //todo(shahzad): can we print the propagating error?
 pub fn type_check_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, statement: *Ast.Statement) !void {
-    // @TODO(shahzad)!!!!: check mutability on assignments
+    // @TODO(shahzad)!!!!: @feat @bug check mutability on assignments
     switch (statement.*) {
         .VarDefStack, .VarDefStackMut => |stmt_var_def_stack| {
             const variable = block.find_scope_variable(stmt_var_def_stack.name);
@@ -417,7 +415,6 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, stat
                 self.context.print_loc(stmt_var_def_stack.name);
                 return Error.VariableRedefinition;
             }
-            //@TODO(shahzad): after we add assignment at initialization we should check type of that shit here
         },
         .VarDefGlobal, .VarDefGlobalMut => {
             unreachable; // @NOTE(shahzad): this is ONLY for static variables inside proc def
@@ -446,12 +443,12 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, stat
             //         &stmt_return.expr.?,
             //     );
             // }
-            //@TODO(shahzad): check all the variables in return value is defined or nah
+            //@TODO(shahzad): @bug @priority check all the variables in return value is defined or nah
         },
     }
 }
 
-// TODO(shahzad): return the type that the block resolves to
+// TODO(shahzad): @feat @bug @priority return the type that the block resolves to
 pub fn type_check_block(self: *Self, module: *Ast.Module, block: *Ast.Block, block_stack_base: usize) anyerror!Ast.ExprType {
     block.stack_var_offset = block_stack_base;
     for (block.stmts.items) |*statement| {
@@ -561,7 +558,7 @@ pub fn type_check_argument_list(self: *Self, module: *const Ast.Module, proc_dec
                 err = true;
             }
         }
-        // TODO(shahzad)!!!!: @refactor add errors and shit
+        // TODO(shahzad)!!!!: @refactor @priority add errors and shit
         const size = self.get_type_size_if_exists(module, &arg.decl.type.?) catch return false;
         if (size == null) {
             // NOTE(shahzad): null size means that the type exists but it hasn't been type checked
@@ -571,7 +568,7 @@ pub fn type_check_argument_list(self: *Self, module: *const Ast.Module, proc_dec
         }
         arg.meta.size = @intCast(size.?);
         arg.meta.is_mut = 1;
-        // TODO(shahzad)!!!: we don't give a shit about anything other than predefined types :sobs:
+        // TODO(shahzad)!!!: @bug @priority we don't give a shit about anything other than predefined types :sobs:
         offset += if (size.? <= 4) 4 else 8;
         arg.offset = @intCast(offset);
     }
@@ -584,13 +581,10 @@ pub fn type_check_proc_decl(self: *Self, module: *Ast.Module, proc_decl: *Ast.Pr
     if (return_size == null) @panic("size is defined but not typechecked!");
     proc_decl.return_size = return_size.?;
 }
-// @TODO(shahzad): typecheck proc calls
 pub fn type_check_mod(self: *Self, module: *Ast.Module) !void {
     for (module.plex_decl.items) |*plex_decl| {
         try self.type_check_plex_decl(module, plex_decl, null);
     }
-    // @TODO(shahzad): type check declarations only
-
     var proc_decl_iter = module.proc_decls.iterator(0);
     while (proc_decl_iter.next()) |proc_decl| {
         try self.type_check_proc_decl(module, proc_decl);

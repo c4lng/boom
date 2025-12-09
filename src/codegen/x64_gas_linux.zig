@@ -135,8 +135,6 @@ pub fn compile_field_access(
 
         switch (fld.kind) {
             .Member => {
-                // TODO(shahzad): kinda unreachable
-                std.log.debug("fld is this {{ name: {s}, offset: {}, size: {} }}\n", .{ fld.kind.Member, fld.field_offset, fld.field_size });
                 fld_offset += fld.field_offset;
                 fld_size = fld.field_size;
             },
@@ -146,17 +144,17 @@ pub fn compile_field_access(
                 const original_size = (try TypeCheck.get_type_size_if_exists2(module, &original_type)).?;
 
                 ret, expr_compiled = try self.compiled_expr_to_asm(module, block, storage, ret, register, register_size);
-                // TODO(shahzad): @bug we don't support dereferencing plex
+                // TODO(shahzad): @bug @priority we don't support dereferencing plex
                 switch (ret) {
                     .Register => |*compiled_expr_as_reg| {
                         const pointer_reg = self.get_register_based_on_size(compiled_expr_as_reg.expr, 8);
                         expr_compiled = self.get_register_based_on_size(compiled_expr_as_reg.expr, original_size);
-                        // TODO(shahzad): @fixme we completely ignoring any non integer dereference :sob:
+                        // TODO(shahzad): @fixme @priority we completely ignoring any non integer dereference :sob:
                         const mnemonic = get_int_mnemonic_based_on_size(@intCast(original_size));
                         _ = try self.program_builder.append_fmt("   mov{s} (%{s}), %{s}\n", .{ mnemonic, pointer_reg, expr_compiled });
                         expr_compiled = try self.scratch_buffer.append_fmt("%{s}", .{expr_compiled});
                         compiled_expr_as_reg.size = @intCast(original_size);
-                        // TODO(shahzad)!!!!!: what about variable that holds a plex????_
+                        // TODO(shahzad)!!!!!: @bug @priority what about variable that holds a plex????_
                     },
 
                     else => std.debug.panic("deref for {} is not implemented!\n", .{ret}),
@@ -172,7 +170,7 @@ pub fn compile_field_access(
                 expr_as_var.size = fld_size;
             },
             .Register => {
-                // TODO(shahzad)!!!!!!: @bug we assume that every dereferenced type is 64 bit
+                // TODO(shahzad)!!!!!!: @bug @priority we assume that every dereferenced type is 64 bit
             },
             else => {
                 std.log.err("man ts is ass {}\n", .{ret});
@@ -208,7 +206,7 @@ pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *
     const plex_decl = module.get_plex_decl(plex.name);
     for (plex.members.items, 0..) |*member, i| {
         const compiled_expr = try self.compile_expr(module, block, member, storage);
-        // TODO(shahzad): @bug recursive plex compilation
+        // TODO(shahzad): @bug @priority recursive plex compilation
         const field_size: u8 = @intCast(plex_decl.?.fields.items[i].size);
         const byte_storage = try storage.get_next(&self.scratch_buffer, field_size);
         const postfix = get_int_mnemonic_based_on_size(field_size);
@@ -243,14 +241,13 @@ pub fn compile_plex(self: *Self, module: *Ast.Module, block: *Ast.Block, plex: *
             },
 
             .Field => @panic("unhandled"),
-            // TODO(shahzad): this should be that hard but i am tired as shit
+            // TODO(shahzad): @bug @priority this should be that hard but i am tired as shit
             .PlexLiteral => @panic("recursive plex literals are not supported as of now"),
         }
         _ = try self.program_builder.append_fmt("   mov{s} {s}, {s}\n", .{ postfix, lhs_compiled, byte_storage });
     }
 }
 
-// TODO(shahzad): generate code here and return the ident that specifies the location?
 pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *const Ast.Expression, storage: ?*Storage) anyerror!CompiledExpression {
     switch (expr.*) {
         .LiteralInt => |expr_as_int_lit| {
@@ -270,7 +267,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             return .{ .Var = .{ .offset = stack_offset, .size = stack_var.meta.size } };
         },
         .FieldAccess => |*field_access| {
-            // TODO(shahzad): @fixme we don't support pointers to plex :sob:
+            // TODO(shahzad): @fixme @priority we don't support pointers to plex :sob:
             return .{ .Field = .{ .access = field_access.* } };
         },
         .Reference => |*ref| {
@@ -282,7 +279,6 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             assert(storage != null);
             const storage_type, const offset = storage.?.mark();
             try self.compile_plex(module, block, &plex, storage.?);
-            // TODO(shahzad): @bug support plex literals initialization
             return .{ .PlexLiteral = .{ .storage_type = storage_type, .start = offset } };
         },
         .Call => |call_expr| {
@@ -290,7 +286,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                 var local_storage: Storage = .init(.CallArg, 0);
                 const expr_compiled_to_reg = try self.compile_expr(module, block, &param_expr, storage orelse &local_storage);
 
-                // TODO(shahzad): @bug we can't use %rdx for binOp because if we do
+                // TODO(shahzad): @bug @needContext we can't use %rdx for binOp because if we do
                 // that after the 3th argument rdx will get overrided
                 switch (expr_compiled_to_reg) {
                     .LitInt => |compiled_expr| {
@@ -325,7 +321,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
             }
             var proc_decl = module.get_proc_decl(call_expr.name);
 
-            // TODO(shahzad): @hack cause we can also define our own put char
+            // NOTE(shahzad): @hack cause we can also define our own put char
             if (proc_decl != null) {
                 // c abi expect number of vector register used in rax if a function with
                 // va args is called, we don't support that anyways to just zeroing out rax
@@ -344,7 +340,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
                 5...8 => 8,
                 else => proc_decl.?.return_size,
             };
-            // TODO(shahzad): @bug add code to handle returning shit that's bigger than 8 bytes
+            // TODO(shahzad): @bug @priority add code to handle returning shit that's bigger than 8 bytes
             return .{ .Call = .{ .expr = "a", .size = @intCast(return_size) } };
         },
         .Block => |blk| {
@@ -415,7 +411,7 @@ pub fn compile_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr: *
 
             return .{ .Register = .{ .expr = "assignment from if conditions is not implemented!", .size = 8 } };
         },
-        // @TODO(shahzad): figure out what to do with this shit
+        // @TODO(shahzad): @needContext figure out what to do with this shit
         .Tuple => {},
         .BinOp => |*expr_as_bin_op| {
             return try self.compile_expr_bin_op(module, block, expr_as_bin_op, storage);
@@ -523,11 +519,9 @@ pub fn compiled_expr_to_asm(
     return .{ ret, expr_compiled };
 }
 pub fn compile_expr_bin_op(self: *Self, module: *Ast.Module, block: *Ast.Block, bin_op: *const Ast.BinaryOperation, storage: ?*Storage) anyerror!CompiledExpression {
-    // TODO(shahzad): @bug 64 bits bin ops are fucked :sob:
+    // TODO(shahzad): @bug @priority 64 bits bin ops are fucked :sob:
     const lhs = try self.compile_expr(module, block, bin_op.lhs, storage);
     const rhs = try self.compile_expr(module, block, bin_op.rhs, storage);
-    // @TODO(shahzad): @pretty change this to if
-
     // TODO(shahzad): @hack this is a hack when we don't know which register rhs will return
     // if lhs also returns the same register ie .Call op .Call which will be op %rax %rax
     // so if rhs is register then we change the lhs register to "b"
@@ -689,7 +683,6 @@ pub fn compile_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, stateme
     }
 }
 fn compile_proc_prologue(self: *Self, procedure: *Ast.ProcDef) !void {
-    // @TODO(shahzad): what about the arguments :sob::sob:
     _ = try self.program_builder.append_fmt("{s}:\n", .{procedure.decl.name});
     _ = try self.program_builder.append_fmt("   mov %rsp, %rbp\n", .{});
     _ = try self.program_builder.append_fmt("   sub ${}, %rsp\n", .{procedure.total_stack_var_offset});

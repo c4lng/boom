@@ -80,7 +80,7 @@ pub const TokenKind = union(enum) {
     const Self = @This();
 
     pub fn from_str(tok: []const u8) !struct { usize, TokenKind } {
-        //@TODO(shahzad)!: add function to parse float
+        //@TODO(shahzad)!: @scope add function to parse float
         return switch (tok[0]) {
             '(' => .{ 1, .ParenOpen },
             ')' => .{ 1, .ParenClose },
@@ -245,7 +245,7 @@ pub const Lexer = struct {
             }
 
             if (program[0] == '\r' or program[0] == '\n') {
-                // @TODO(shahzad): this fks up multiple new lines
+                // @TODO(shahzad): @bug @priority @context this fks up multiple new lines
                 program = std.mem.trimLeft(u8, program, "\r\n");
                 current_line = strings.get_line(program);
                 continue;
@@ -255,7 +255,7 @@ pub const Lexer = struct {
             const consumed_length, const token_kind = TokenKind.from_str(program) catch |err| {
                 switch (err) {
                     else => {
-                        // @TODO(shahazd): better squigly line error reporting shit
+                        // @TODO(shahazd): @bug @context better squigly line error reporting shit
                         std.log.err("error: failed to parse token: \"{s}\"\n", .{current_line});
                         std.log.err("{[value]s: >[width]}^\n", .{
                             .value = "",

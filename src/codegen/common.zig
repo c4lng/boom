@@ -30,7 +30,7 @@ pub const CompiledExpression = union(enum) {
     LitStr: CompiledExpCommon,
     Register: CompiledExpCommon,
     Call: CompiledExpCommon,
-    // TODO(shahzad): @refactor i've piled garbage onto garbage so much that i have to
+    // TODO(shahzad): @refactor @priority i've piled garbage onto garbage so much that i have to
     // do the oop :sob: we will have to refactor ts
     pub fn get_size(self: @This()) u32 {
         switch (self) {

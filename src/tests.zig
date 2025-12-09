@@ -71,7 +71,7 @@ const TestFiles = struct {
         }
     }
     pub fn delete(self: Self) !void {
-        // TODO(shahzad): return error from here
+        // TODO(shahzad): @refactor return error from here
         var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
         for (self.filenames.items) |test_file| {
             const test_obj_file = std.fmt.bufPrint(&path_buffer, "{s}.o", .{test_file}) catch unreachable;
@@ -88,7 +88,7 @@ const TestFiles = struct {
         // defer test_files.allocator.free(output_dir_name);
 
         for (self.filenames.items) |filename| {
-            if (opts.incremental) {} // TODO(shahzad): impl this
+            if (opts.incremental) {} // TODO(shahzad): @scope impl this
             const pipe = try std.posix.pipe();
             const to_read_file = std.fs.File{ .handle = pipe[0] };
             const to_write_file = std.fs.File{ .handle = pipe[1] };
@@ -108,7 +108,7 @@ const TestFiles = struct {
             const proc_ret = try cmd.run(.{});
             if (proc_ret.status != 0) {
                 std.log.err("failed to run test {s} exited with {}\n", .{ filename, proc_ret.status });
-                continue; //TODO(shahzad): ignoring failure is not a good thing
+                continue; //TODO(shahzad): @scope ignoring failure is not a good thing
             }
 
             to_write_file.close();

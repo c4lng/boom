@@ -94,7 +94,7 @@ pub const Compiler = struct {
 
         ret = blk: {
             if (!save_asm_file) {
-                // TODO(shahzad): extend nob.zig to support this
+                // TODO(shahzad): @scope extend nob.zig to support this
                 var child_proc = std.process.Child.init(cmd.arg_list.items, self.allocator);
                 child_proc.stdin_behavior = .Pipe;
                 try child_proc.spawn();

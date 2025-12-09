@@ -129,7 +129,7 @@ pub const Parser = struct {
                 self.tokens.advance(1);
             },
             .CurlyOpen => {
-                // @TODO(shahzad)!!!!!: instead of duplicating the procedure declaration
+                // @TODO(shahzad)!!!!!: @perf? instead of duplicating the procedure declaration
                 // only store it in the ProcDecl array and attach an index to it that specifies
                 // the procDef
                 const proc_def = try self.module.proc_defs.addOne(self.allocator);
@@ -439,7 +439,7 @@ pub const Parser = struct {
     //  /\      /\
     // x  43   34  35
     //
-    // @TODO(shahzad): make it so this respect precedence
+    // @TODO(shahzad): @bug @priority make it so this respect precedence
 
     fn parse_field_access(self: *Self, first_expr: *Ast.Expression) anyerror!Ast.FieldAccess {
         var token = self.tokens.peek(0).?;
@@ -623,10 +623,6 @@ pub const Parser = struct {
             },
             .ParenClose, .CurlyClose => expr = .NoOp,
 
-            // @TODO(shahzad): i don't think we need this anymore
-            // .Semi, .ParenClose => {
-            //     expr = .NoOp;
-            // },
             else => {
                 self.tokens.advance(1); // skip the token
                 token.?.print_loc();

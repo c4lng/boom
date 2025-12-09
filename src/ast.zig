@@ -22,7 +22,6 @@ pub const Module = struct {
     proc_decls: std.SegmentedList(ProcDecl, 8),
     proc_defs: std.SegmentedList(ProcDef, 8),
     plex_decl: ArrayListManaged(PlexDecl),
-    // TODO(shahzad): @feat add field for user defined types
     total_branches: usize, // for label generation
     has_main_proc: bool = false, // cries in alignment :sob:
     const Self = @This();
@@ -166,7 +165,7 @@ pub const ConditionalExpression = struct {
     condition: *Expression,
     expression: *Expression,
 };
-// @TODO(shahzad): add source here so we can do error reporting
+// @TODO(shahzad): @priority add source here so we can do error reporting
 
 pub const Expression = union(enum) {
     pub const ProcCall = struct { name: []const u8, params: ArrayListManaged(Expression) };
@@ -215,7 +214,7 @@ pub const PlexDecl = struct {
         return null;
     }
 };
-// @TODO(shahzad): add source in every field here so we can do error reporting
+// @TODO(shahzad): @bug @priority add source in every field here so we can do error reporting
 pub const Statement = union(enum) {
     VarDefStack: VarDecl,
     VarDefStackMut: VarDecl,
@@ -225,7 +224,7 @@ pub const Statement = union(enum) {
     Return: Expression,
 };
 
-//TODO(shahzad): add fmt here
+//TODO(shahzad): @bug add fmt here
 pub const ExprType = struct {
     type: []const u8, // this should be in meta but fuck it
     info: union { ptr_depth: usize, int_lit: u64 }, // contains the depth or int literal
@@ -265,7 +264,7 @@ pub const Variable = struct {
 };
 pub const StackVar = Variable;
 pub const Argument = Variable;
-// TODO(shahzad): @refactor size should be the part of ExprType
+// TODO(shahzad): @refactor @priority size should be the part of ExprType
 pub const ProcDecl = struct {
     name: []const u8,
     args_list: ArrayListManaged(Argument),
@@ -284,7 +283,7 @@ pub const ProcDecl = struct {
         };
     }
     pub fn get_required_params(self: *const Self) ArrayListManaged(Argument) {
-        // @TODO(shahzad): impl this function frfr
+        // @TODO(shahzad): @bug @scope impl this function frfr
         return self.args_list;
     }
     pub fn get_argument(self: *const Self, arg_name: []const u8) ?Argument {
