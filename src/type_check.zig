@@ -400,7 +400,7 @@ pub fn type_check_expr(self: *Self, module: *Ast.Module, block: *Ast.Block, expr
 }
 
 //todo(shahzad): can we print the propagating error?
-pub fn type_check_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, statement: *Ast.Statement) !void {
+pub fn type_check_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, statement: *Ast.Statement) !Ast.ExprType {
     // @TODO(shahzad)!!!!: @feat @bug check mutability on assignments
     switch (statement.*) {
         .VarDefStack, .VarDefStackMut => |stmt_var_def_stack| {
@@ -415,34 +415,20 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, stat
                 self.context.print_loc(stmt_var_def_stack.name);
                 return Error.VariableRedefinition;
             }
+            // TODO(shahzad): @bug @feat make a flexible type that can specify that the expr is untyped
+            // so then we can use it for resolution in upper level
+            const var_type: Ast.ExprType = .{ .type = "0unresolved_var_type_unreachable", .info = .{ .ptr_depth = 0 } };
+            return var_type;
         },
         .VarDefGlobal, .VarDefGlobalMut => {
             unreachable; // @NOTE(shahzad): this is ONLY for static variables inside proc def
 
         },
         .Expr => |*stmt_expr| {
-            _ = try self.type_check_expr(module, block, stmt_expr);
+            return try self.type_check_expr(module, block, stmt_expr);
         },
-        .Return => |stmt_return| {
-            _ = stmt_return;
-            unreachable;
-            // if (!std.mem.eql(u8, procedure.decl.return_type.type, "void")) {
-            //     if (stmt_return.expr == null) {
-            //         std.log.err("@TODO(shahzad): add something in return to get the location!!!", .{});
-            //         std.log.err("{s}: caller expects '{s}' but procedure '{s}' returns void", .{
-            //             self.context.filename,
-            //             procedure.decl.return_type.type,
-            //             procedure.decl.name,
-            //         });
-            //     }
-            // }
-            // if (stmt_return.expr != null) {
-            //     _ = try self.type_check_expr(
-            //         module,
-            //         procedure,
-            //         &stmt_return.expr.?,
-            //     );
-            // }
+        .Return => |*return_expr| {
+            return try self.type_check_expr(module, block, return_expr);
             //@TODO(shahzad): @bug @priority check all the variables in return value is defined or nah
         },
     }
@@ -452,8 +438,8 @@ pub fn type_check_stmt(self: *Self, module: *Ast.Module, block: *Ast.Block, stat
 pub fn type_check_block(self: *Self, module: *Ast.Module, block: *Ast.Block, block_stack_base: usize) anyerror!Ast.ExprType {
     block.stack_var_offset = block_stack_base;
     for (block.stmts.items) |*statement| {
-        try self.type_check_stmt(module, block, statement);
-
+        const stmt_resolve_type = try self.type_check_stmt(module, block, statement);
+        if (statement.* == .Return) return stmt_resolve_type;
         if (statement.* == .VarDefStack or statement.* == .VarDefStackMut) {
             var var_def = if (statement.* == .VarDefStack) statement.VarDefStack else statement.VarDefStackMut;
             const size = (try self.get_type_size_if_exists(module, &var_def.type.?)).?;
@@ -493,6 +479,7 @@ pub fn type_check_proc(self: *Self, module: *Ast.Module, procedure: *Ast.ProcDef
             procedure.decl.name,
             return_type.type,
         });
+        // TODO(shahzad): should throw here
     }
 }
 pub fn get_type_size_if_exists2(module: *const Ast.Module, expr_type: *const Ast.ExprType) Error!?usize {

@@ -10,7 +10,9 @@ const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
 const SourceContext = @import("ast.zig").SourceContext;
 const TypeCheck = @import("./type_check.zig");
-const CodeGen = @import("./codegen/x64_gas_linux.zig");
+const Ir = @import("ir.zig");
+// const CodeGen = @import("./codegen/x64_gas_linux.zig");
+const CodeGen = @import("./codegen/ir_codegen.zig");
 const StringBuilder = @import("string_builder.zig");
 
 const nob = @import("nob.zig");
@@ -69,8 +71,15 @@ pub const Compiler = struct {
             std.log.debug("Error Occured {}", .{err});
             return err;
         };
-        self.code_gen = CodeGen.init(self.allocator);
-        try self.code_gen.compile_mod(&module);
+        var ir = Ir.init(self.allocator);
+        var ir_son = try ir.from_proc(module.proc_defs.at(0));
+        self.code_gen = try CodeGen.init(self.allocator);
+        try self.code_gen.compile_bb(&ir_son);
+        // try self.code_gen.compile_son(&ir_son);
+        
+        // try self.code_gen.compile_son(&ir_son);
+        // self.code_gen = CodeGen.init(self.allocator);
+        // try self.code_gen.compile_mod(&module);
     }
 
     pub fn build_asm_file(self: Self, save_asm_file: bool) !void {
@@ -143,10 +152,10 @@ pub fn main() !void {
     var compiler = Compiler.default(allocator, opts);
     try compiler.compile();
 
-    try compiler.build_asm_file(false);
+    // try compiler.build_asm_file(false);
 
-    std.debug.print("generated assembly", .{});
-    std.debug.print("--------------------------------------------------\n", .{});
-    std.debug.print("{s}\n", .{compiler.code_gen.program_builder.string.items});
-    std.debug.print("--------------------------------------------------\n", .{});
+    // std.debug.print("generated assembly", .{});
+    // std.debug.print("--------------------------------------------------\n", .{});
+    // std.debug.print("{s}\n", .{compiler.code_gen.program_builder.string.items});
+    // std.debug.print("--------------------------------------------------\n", .{});
 }

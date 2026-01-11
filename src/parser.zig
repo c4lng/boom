@@ -125,7 +125,7 @@ pub const Parser = struct {
         };
         switch (self.tokens.peek(0).?.kind) {
             .Semi => {
-                try self.module.proc_decls.append( self.allocator,proc_decl);
+                try self.module.proc_decls.append(self.allocator, proc_decl);
                 self.tokens.advance(1);
             },
             .CurlyOpen => {
@@ -270,13 +270,13 @@ pub const Parser = struct {
                 .Expr => {
                     set_outer_if_type_contains_block(&statement.Expr, block);
                 },
-                .Return => {
-                    @panic("this is unimplemented!");
-                },
+                .Return => {},
                 else => unreachable,
             }
             try statements.append(statement);
-            std.log.debug("{}\n", .{statement});
+            if (statement == .VarDefStack) {
+            std.log.debug("man is this the log {}\n", .{statement.VarDefStack.type.?});
+            }
         }
         self.tokens.advance(1);
         block.* = .{ .stmts = statements, .stack_vars = .init(self.module.allocator), .outer = null, .owner_proc = owner_proc };
