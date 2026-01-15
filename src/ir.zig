@@ -4,6 +4,7 @@ const ArrayListManaged = std.array_list.Managed;
 const assert = std.debug.assert;
 
 const Ast = @import("ast.zig");
+const Lexer = @import("lexer.zig");
 const Self = @This();
 
 allocator: Allocator,
@@ -41,7 +42,7 @@ pub const Instruction = struct {
     type: union(enum) {
         FunctionDef: struct { label: []const u8 },
         // stores index in value array
-        Add: struct { lhs: usize, rhs: usize },
+        BinOp: struct { Op: Lexer.Operators, lhs: usize, rhs: usize },
         Value: usize,
         Return: usize,
         Void: void, // chat should we generate no op?
@@ -50,13 +51,24 @@ pub const Instruction = struct {
     pub fn peephole(self: *Instruction, ctx: *Self, bb: *BasicBlock) !void {
         _ = bb;
         switch (self.type) {
-            .Add => |as_add| {
-                const lhs = get_value(ctx.values, as_add.lhs);
-                const rhs = get_value(ctx.values, as_add.rhs);
+            .BinOp => |as_binop| {
+                const lhs = get_value(ctx.values, as_binop.lhs);
+                const rhs = get_value(ctx.values, as_binop.rhs);
 
                 if (lhs.type == .Const and rhs.type == .Const) {
                     self.type = .Void;
-                    const result = lhs.type.Const.Int + rhs.type.Const.Int;
+
+                    const lhs_as_const = lhs.type.Const.Int;
+                    const rhs_as_const = rhs.type.Const.Int;
+
+                    const result = switch (as_binop.Op) {
+                        .Add => @addWithOverflow(lhs_as_const, rhs_as_const).@"0",
+                        .Sub => @subWithOverflow(lhs_as_const, rhs_as_const).@"0",
+                        .Mul => @mulWithOverflow(lhs_as_const, rhs_as_const).@"0",
+                        .Div => @divTrunc(lhs_as_const, rhs_as_const),
+                        else => unreachable, // unimplemented
+                    };
+
                     const value = get_value(ctx.values, self.produces);
                     value.* = .{
                         .type = .{ .Const = .{ .Int = result } },
@@ -102,7 +114,7 @@ pub fn parse_binop(self: *Self, bin_op: *const Ast.BinaryOperation, insts: *Arra
 
     try self.values.append(.{ .type = .Result });
     const dest = self.values.items.len - 1;
-    try insts.append(.{ .type = .{ .Add = .{ .lhs = lhs, .rhs = rhs } }, .produces = dest });
+    try insts.append(.{ .type = .{ .BinOp = .{ .Op = bin_op.op, .lhs = lhs, .rhs = rhs } }, .produces = dest });
     return dest;
 }
 pub fn parse_expr(self: *Self, expr: *const Ast.Expression, insts: *ArrayListManaged(Instruction)) anyerror!usize {
@@ -137,6 +149,6 @@ pub fn parse_block(self: *Self, block: *const Ast.Block) !BasicBlock {
 
 pub fn from_proc(self: *Self, proc: *const Ast.ProcDef) !BasicBlock {
     var bb = try self.parse_block(proc.block);
-    if (false) try bb.optimize(self);
+    try bb.optimize(self);
     return bb;
 }

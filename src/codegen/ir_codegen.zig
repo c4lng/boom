@@ -126,9 +126,9 @@ pub fn mov_reg_to_reg(self: *Self, src: Register, dst: Register) !void {
 }
 pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.BasicBlock) anyerror!Operand {
     switch (inst.type) {
-        .Add => |as_add| {
-            var lhs = try self.resolve_value(get_value(self.values, as_add.lhs), bb);
-            var rhs = try self.resolve_value(get_value(self.values, as_add.rhs), bb);
+        .BinOp => |as_binop| {
+            var lhs = try self.resolve_value(get_value(self.values, as_binop.lhs), bb);
+            var rhs = try self.resolve_value(get_value(self.values, as_binop.rhs), bb);
 
             var lhs_reg: Register = undefined;
 
@@ -171,6 +171,21 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                 .Void => unreachable,
             };
             self.scratch_buffer.reset();
+            switch (as_binop.Op) {
+                .Add => {
+                    _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+                },
+                .Sub => {
+                    _ = try self.program_builder.append_fmt("   sub {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+                },
+                .Mul => {
+                    unreachable;
+                },
+                .Div => {
+                    unreachable; // we don't care
+                },
+                else => unreachable, // unimplemented
+            }
             _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
             var dst = get_value(self.values, inst.produces);
             _ = try self.computed_values.append(.{ .Register = lhs_reg });
@@ -222,9 +237,9 @@ pub fn resolve_value(self: *Self, value: *const Ir.Value, bb: *const Ir.BasicBlo
             assert(parent_value.lowered_operand_idx != std.math.maxInt(usize));
             return self.computed_values.items[parent_value.lowered_operand_idx];
         },
-        .Result => { 
+        .Result => {
             return self.computed_values.items[value.lowered_operand_idx];
- },
+        },
     }
 }
 
