@@ -86,6 +86,18 @@ pub const Operand = union(enum) {
     Void: void,
 };
 
+pub fn ensure_reg(self: *Self, operand: Operand) !Register {
+    switch (operand) {
+        .Register => |as_reg| return as_reg,
+        .Immediate => |imm_value| {
+            const reg = self.reg_alloc();
+            try self.load_imm_to_reg(imm_value, &reg.to_string());
+            return reg;
+        },
+        .Memory => unreachable,
+        .Void => unreachable,
+    }
+}
 pub fn reg_alloc(self: *Self) Register {
     const idx = @clz(self.registers);
     assert(idx <= 10); // we have allocated too much and went to callee Register's boundary
@@ -125,6 +137,7 @@ pub fn mov_reg_to_reg(self: *Self, src: Register, dst: Register) !void {
     _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ src.to_string(), dst.to_string() });
 }
 pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.BasicBlock) anyerror!Operand {
+    // TODO(shahzad): @bug @priority free rhs register
     switch (inst.type) {
         .BinOp => |as_binop| {
             var lhs = try self.resolve_value(get_value(self.values, as_binop.lhs), bb);
@@ -134,6 +147,7 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
 
             std.debug.print("lhs = {}, rhs = {}\n", .{ lhs, rhs });
             if (lhs == .Immediate and (rhs == .Register or rhs == .Memory)) {
+                // if one side is register make it lhs
                 const temp = lhs;
                 lhs = rhs;
                 rhs = temp;
@@ -161,7 +175,6 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                     var rhs_reg = reg;
                     // NOTE(shahzad): @bug @priority hardcoded
                     rhs_reg.width = 4;
-                    self.reg_free(reg);
                     break :blk try self.scratch_buffer.append_fmt("%{s}", .{rhs_reg.to_string()});
                 },
                 .Immediate => |imm_value| {
@@ -170,7 +183,6 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                 .Memory => unreachable,
                 .Void => unreachable,
             };
-            self.scratch_buffer.reset();
             switch (as_binop.Op) {
                 .Add => {
                     _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
@@ -179,14 +191,42 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                     _ = try self.program_builder.append_fmt("   sub {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
                 },
                 .Mul => {
-                    unreachable;
+                    _ = try self.program_builder.append_fmt("   imul {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
                 },
                 .Div => {
-                    unreachable; // we don't care
+                    _ = try self.program_builder.append_fmt("   #-----divide------\n", .{});
+
+                    const a_reg: Register = .{ .width = 8, .id = .A };
+                    var tmp_ax_hold_reg: ?Register = null;
+                    const rhs_reg = try self.ensure_reg(rhs);
+                    if (lhs.Register.id != .A) { // lhs will always be a register
+                        if (self.is_reg_available(a_reg)) {
+                            try self.mov_reg_to_reg(lhs.Register, .{ .width = 8, .id = .A });
+                            self.reg_free(lhs_reg);
+                            lhs_reg.id = .A;
+                        } else {
+                            tmp_ax_hold_reg = self.reg_alloc();
+
+                            // register is not available so we shuffle
+                            try self.mov_reg_to_reg(a_reg, tmp_ax_hold_reg.?);
+                            try self.mov_reg_to_reg(lhs.Register, .{ .width = 8, .id = .A });
+                        }
+                    }
+
+                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{rhs_reg.to_string()});
+                    try self.mov_reg_to_reg(a_reg, lhs_reg);
+
+                    if (tmp_ax_hold_reg) |tmp_reg|{
+                        try self.mov_reg_to_reg(tmp_reg, a_reg);
+                        self.reg_free(tmp_reg);
+                    }
+
+                    self.reg_free(rhs_reg);
                 },
                 else => unreachable, // unimplemented
             }
-            _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+            self.scratch_buffer.reset();
+
             var dst = get_value(self.values, inst.produces);
             _ = try self.computed_values.append(.{ .Register = lhs_reg });
             dst.lowered_operand_idx = self.computed_values.items.len - 1;
@@ -244,7 +284,7 @@ pub fn resolve_value(self: *Self, value: *const Ir.Value, bb: *const Ir.BasicBlo
 }
 
 pub fn compile_bb(self: *Self, bb: *const Ir.BasicBlock) !void {
-    for (bb.inst.items) |*inst| {
+    for (bb.insts.items) |*inst| {
         const operand = try self.compile_inst(inst, bb);
         try self.computed_values.append(operand);
         const idx = self.computed_values.items.len - 1;

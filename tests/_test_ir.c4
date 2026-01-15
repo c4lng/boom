@@ -1,17 +1,15 @@
 proc main() -> x32 {
   // we don't have precidence so rip :sob:
-  // let x0: x32 = 1;
-  // let y0: x32 = 2;
-  // let x1: x32 = 3;
-  // let y1: x32 = 4;
+  let x0: x32 = 1;
+  let y0: x32 = 2;
+  let x1: x32 = 3;
+  let y1: x32 = 4;
 
-  // let dx: x32 = x0 - x1;
-  // let dx2: x32 = dx * dx;
+  let dx: x32 = x0 - x1;
+  let dx2: x32 = dx * dx;
 
-  // let dy: x32 = y0 - y1;
-  // let dy2: x32 = dy * dy;
+  let dy: x32 = y0 - y1;
+  let dy2: x32 = dy * dy;
 
-  // return dx2 + dy2;
-  return 34 + 35 + 100;
-
+  return dx2 + dy2;
 }

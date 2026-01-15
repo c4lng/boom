@@ -98,7 +98,6 @@ pub const TokenKind = union(enum) {
                         '>' => break :blk .{ 2, .Arrow },
                         '=' => break :blk .{ 2, .{ .Op = .SubAss } },
                         else => {
-                            std.log.err("unidentified token \"{s}\"\n", .{tok[1..]});
                             break :blk .{ 1, .{ .Op = .Sub } };
                         },
                     }
