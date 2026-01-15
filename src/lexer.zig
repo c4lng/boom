@@ -19,7 +19,7 @@ const keywords = [_]struct { []const u8, TokenKind }{
 };
 
 // @TODO(shahzad): this should be a common thingy
-pub const BinOp = enum {
+pub const Operators = enum {
     Ass,
     Add,
     Sub,
@@ -43,7 +43,7 @@ pub const TokenKind = union(enum) {
     LiteralString: []const u8,
     LiteralFloat: f64,
 
-    Op: BinOp,
+    Op: Operators,
 
     //identifier
     Ident: void,

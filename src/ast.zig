@@ -5,7 +5,7 @@ const assert = std.debug.assert;
 const ArrayListManaged = std.array_list.Managed;
 
 const strings = @import("./strings.zig");
-const BinOp = @import("lexer.zig").BinOp;
+const Operators = @import("lexer.zig").Operators;
 pub const Error = error{UnexpectedToken};
 
 pub const StringLiteral = struct {
@@ -100,11 +100,11 @@ pub const FieldAccess = struct {
     last_field_size: u32,
 };
 pub const BinaryOperation = struct {
-    op: BinOp,
+    op: Operators,
     lhs: *Expression,
     rhs: *Expression,
     const Self = @This();
-    pub fn init(allocator: Allocator, op_type: BinOp, lhs_expr: Expression, rhs_expr: Expression) !Self {
+    pub fn init(allocator: Allocator, op_type: Operators, lhs_expr: Expression, rhs_expr: Expression) !Self {
         const lhs = try allocator.create(Expression);
         const rhs = try allocator.create(Expression);
         lhs.* = lhs_expr;
