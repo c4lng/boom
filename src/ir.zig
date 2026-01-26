@@ -8,9 +8,10 @@ const Lexer = @import("lexer.zig");
 
 pub const Module = @This();
 
+const SymbolTable = std.StringHashMap(usize);
 values: ArrayListManaged(Value) = undefined,
 procs: ArrayListManaged(Procedure) = undefined,
-global_symbols: SymbolTable = undefined,
+symbols: SymbolTable = undefined,
 allocator: Allocator,
 
 pub fn init(allocator: Allocator) Module {
@@ -18,7 +19,7 @@ pub fn init(allocator: Allocator) Module {
         .allocator = allocator,
         .values = .init(allocator),
         .procs = .init(allocator),
-        .global_symbols = .init(allocator),
+        .symbols = .init(allocator),
     };
 }
 
@@ -30,12 +31,17 @@ pub const Procedure = struct {
     symbol_table_stack: SymbolTableStack,
     block: Block,
     mod: *Module,
-    pub fn init(module: *Module, name: []const u8) @This() {
+    args: ArrayListManaged(usize),
+    produces: usize,
+
+    pub fn init(mod: *Module, name: []const u8, value_idx: usize) @This() {
         return .{
             .name = name,
-            .symbol_table_stack = .init(module.allocator),
-            .block = .init(module.allocator),
-            .mod = module,
+            .symbol_table_stack = .init(mod.allocator),
+            .block = .init(mod.allocator),
+            .mod = mod,
+            .args = .init(mod.allocator),
+            .produces = value_idx,
         };
     }
 };
@@ -95,7 +101,6 @@ const SymbolTableStack = struct {
     }
 };
 
-const SymbolTable = std.StringHashMap(usize);
 pub fn print_symbol_table(mod: Module, sym_table: SymbolTable) void {
     var iter = sym_table.iterator();
     while (iter.next()) |ent| {
@@ -137,6 +142,7 @@ pub const Instruction = struct {
         BinOp: Lexer.Operators,
         Value,
         Return,
+        ProcCall: []const u8, // TODO(shahzad): @scope can we remove this and put proc name as a value?
         Void, // chat should we generate no op?
     };
     type: Type,
@@ -226,6 +232,32 @@ pub fn parse_expr(mod: *Module, proc: *Procedure, expr: *const Ast.Expression, i
             }
             return var_as_value.?;
         },
+
+        .Call => |as_call| {
+            var call_inst: Instruction = try .init(mod.allocator, .{ .ProcCall = as_call.name }, null, &[_]usize{});
+            for (as_call.params.items) |*call_param| {
+                const value_id = try mod.parse_expr(proc, call_param, insts);
+                try call_inst.operands.append(value_id);
+            }
+
+            try insts.append(call_inst);
+
+            // TODO(shahzad): @scope make it so this should first look for lambda functions instead
+            // of directly looking up in the global symbol table
+            const proc_return_value = mod.symbols.get(as_call.name);
+            if (proc_return_value == null) {
+                // TODO(shahzad): @scope symbol can also be an extern present in different module
+                std.log.err("call symbol '{s}' not present in symbol table", .{as_call.name});
+
+                std.log.debug("----------start---------------", .{});
+                print_symbol_table(mod.*, mod.symbols);
+                std.log.debug("===========end================", .{});
+
+                @panic("symbol not present in the table!");
+            }
+            return proc_return_value.?;
+        },
+
         else => unreachable,
     }
     unreachable;
@@ -245,7 +277,9 @@ pub fn parse_block(mod: *Module, proc: *Procedure, ast_block: *const Ast.Block, 
     basic_block.* = .init(mod.allocator);
     for (ast_block.stmts.items) |stmt| {
         switch (stmt) {
-            .Expr => {},
+            .Expr => |*as_expr| {
+                _ = try mod.parse_expr(proc, as_expr, &basic_block.insts);
+            },
             .Return => |as_ret| {
                 const value_id = try mod.parse_expr(proc, &as_ret, &basic_block.insts);
 
@@ -267,11 +301,24 @@ pub fn parse_block(mod: *Module, proc: *Procedure, ast_block: *const Ast.Block, 
 }
 
 pub fn compile_proc(mod: *Module, proc_def: *const Ast.ProcDef, opts: Options) !Procedure {
-    var proc: Procedure = .init(mod, proc_def.decl.name);
-    try proc.symbol_table_stack.new_frame();
-    // TODO(shahzad): @bug @scope we have to have more than one basic block
-    try mod.parse_block(&proc, proc_def.block, &proc.block);
 
+    // TODO(shahzad): @bug @priority figure out how to use types and shit from type checker
+    // TODO(shahzad): @scope figure out how to do inlining
+    // TODO(shahzad): @bug @scope we have to have more than one basic block
+
+    const proc_name = proc_def.decl.name;
+    const value_idx = if (!std.mem.eql(u8, proc_def.decl.return_type.type, "void")) blk: {
+        const proc_return_value = try mod.values.addOne();
+        proc_return_value.type = .Result;
+        break :blk mod.values.items.len - 1;
+    } else std.math.maxInt(usize);
+
+    var proc: Procedure = .init(mod, proc_name, value_idx);
+
+    try mod.symbols.put(proc_name, value_idx);
+
+    try proc.symbol_table_stack.new_frame();
+    try mod.parse_block(&proc, proc_def.block, &proc.block);
     if (opts.enable_peephole) {
         for (proc.block.basic_blocks.items) |*bb| try bb.*.optimize(mod);
     }

@@ -19,6 +19,15 @@ registers: u16 = 0b1111111110000000,
 // TODO(shahzad): @scope duplication put this in utils or smth
 const get_value = Ir.get_value;
 
+const LinuxCallingConvRegisters = [_]Register{
+    .{ .id = .DI },
+    .{ .id = .SI },
+    .{ .id = .D },
+    .{ .id = .C },
+    .{ .id = .r8 },
+    .{ .id = .r9 },
+};
+
 pub const Register = struct {
     pub const Id = enum(u8) {
         // we only give a shit about callee saved register
@@ -34,47 +43,36 @@ pub const Register = struct {
     };
     id: Id,
     width: u8 = 69,
-    pub fn to_string(self: @This(), builder: *StringBuilder) ![]u8 {
-        var prefix = switch (self.width) {
-            inline 1, 2 => "",
-            inline 4 => "e",
-            inline 8 => "r",
-            inline else => |value| {
-                std.log.err("value is this {}\n", .{value});
-                unreachable;
-            },
-        };
-        var postfix = switch (self.width) {
-            inline 0 => "", // just here to make zig compiler stfu and make it compile
-            inline 1 => "l",
-            inline 2, 4, 8 => "x",
-            inline else => unreachable,
-        };
-        const middle = switch (self.id) {
-            inline .A => "a",
-            inline .B => "b",
-            inline .C => "c",
-            inline .D => "d",
-            inline .DI => "di",
-            inline .SI => "si",
-            inline else => |value| blk: {
-                prefix = "";
-                postfix = "";
-                break :blk @tagName(value);
-            },
-        };
-        // TODO(shahzad): better names
-        return builder.print_fmt("{s}{s}{s}", .{ prefix, middle, postfix });
-    }
-};
+    // i stole this from ChatGPT and i am not proud of it :sob::sob:
+    pub fn to_string(self: @This()) []const u8 {
+        const w = self.width;
+        return switch (self.id) {
+            .A => reg_name(w, "al", "ax", "eax", "rax"),
+            .B => reg_name(w, "bl", "bx", "ebx", "rbx"),
+            .C => reg_name(w, "cl", "cx", "ecx", "rcx"),
+            .D => reg_name(w, "dl", "dx", "edx", "rdx"),
+            .SI => reg_name(w, "sil", "si", "esi", "rsi"),
+            .DI => reg_name(w, "dil", "di", "edi", "rdi"),
 
-const LinuxCallingConvRegisters = [_][]const u8{
-    "edi", "rdi",
-    "esi", "rsi",
-    "edx", "rdx",
-    "ecx", "rcx",
-    "r8d", "r8",
-    "r9d", "r9",
+            inline else => |reg_tag| reg_name(w, @tagName(reg_tag) ++ "b", @tagName(reg_tag) ++ "w", @tagName(reg_tag) ++ "d", @tagName(reg_tag)),
+        };
+    }
+
+    inline fn reg_name(
+        width: u8,
+        r8: []const u8,
+        r16: []const u8,
+        r32: []const u8,
+        r64: []const u8,
+    ) []const u8 {
+        return switch (width) {
+            1 => r8,
+            2 => r16,
+            4 => r32,
+            8 => r64,
+            else => std.debug.panic("invalid register width {}\n", .{width}),
+        };
+    }
 };
 
 pub const Operand = union(enum) {
@@ -95,6 +93,13 @@ pub fn ensure_reg(self: *Self, operand: Operand) !Register {
         .Memory => unreachable,
         .Void => unreachable,
     }
+}
+
+// TODO(shahzad): @refactor rename
+pub fn reg_alloc2(self: *Self, idx: u16) void {
+    const reg = Register{ .id = @enumFromInt(idx) };
+    assert(self.is_reg_available(reg));
+    self.registers ^= @as(u16, @intCast(1)) << @intCast(15 - idx);
 }
 pub fn reg_alloc(self: *Self) Register {
     const idx = @clz(self.registers);
@@ -128,11 +133,23 @@ pub fn init(allocator: Allocator, values: ArrayListManaged(Ir.Value)) !Self {
 
 // TODO(shahzad): @scope @priority register should be a structure
 pub fn load_imm_to_reg(self: *Self, imm_value: u64, reg: Register) !void {
-    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ imm_value, try reg.to_string(&self.scratch_buffer) });
+    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ imm_value, reg.to_string() });
 }
 pub fn mov_reg_to_reg(self: *Self, src: Register, dst: Register) !void {
     if (src.id == dst.id) return;
-    _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ try src.to_string(&self.scratch_buffer), try dst.to_string(&self.scratch_buffer) });
+    _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ src.to_string(), dst.to_string() });
+}
+pub fn mov_op_to_reg(self: *Self, src: Operand, dst: Register) !void {
+    switch (src) {
+        .Register => |as_reg| {
+            try self.mov_reg_to_reg(as_reg, dst);
+        },
+        .Immediate => |as_imm| {
+            try self.load_imm_to_reg(as_imm, dst);
+        },
+        .Memory => unreachable,
+        .Void => unreachable,
+    }
 }
 pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.BasicBlock) anyerror!Operand {
     const mark = self.scratch_buffer.mark();
@@ -157,14 +174,14 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                     lhs_reg = reg;
                     // NOTE(shahzad): @bug @priority hardcoded
                     lhs_reg.width = 4;
-                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{try lhs_reg.to_string(&self.scratch_buffer)});
+                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{lhs_reg.to_string()});
                 },
                 .Immediate => |imm_value| {
                     lhs_reg = self.reg_alloc();
                     // NOTE(shahzad): @bug @priority hardcoded
                     lhs_reg.width = 4;
                     try self.load_imm_to_reg(imm_value, lhs_reg);
-                    const lhs_as_str = try lhs_reg.to_string(&self.scratch_buffer);
+                    const lhs_as_str = lhs_reg.to_string();
                     break :blk try self.scratch_buffer.append_fmt("%{s}", .{lhs_as_str});
                 },
                 .Memory => unreachable,
@@ -175,7 +192,7 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                     var rhs_reg = reg;
                     // NOTE(shahzad): @bug @priority hardcoded
                     rhs_reg.width = 4;
-                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{try rhs_reg.to_string(&self.scratch_buffer)});
+                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{rhs_reg.to_string()});
                 },
                 .Immediate => |imm_value| {
                     break :blk try self.scratch_buffer.append_fmt("${}", .{imm_value});
@@ -213,7 +230,7 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                         }
                     }
 
-                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{try rhs_reg.to_string(&self.scratch_buffer)});
+                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{rhs_reg.to_string()});
                     try self.mov_reg_to_reg(a_reg, lhs_reg);
 
                     if (tmp_ax_hold_reg) |tmp_reg| {
@@ -252,6 +269,26 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                 .Memory => unreachable,
                 .Void => unreachable,
             }
+        },
+        .ProcCall => |call_name| {
+            for (inst.operands.items, 0..) |param_expr_idx, idx| {
+                const value = get_value(self.values, param_expr_idx);
+                const operand = try self.resolve_value(value, bb);
+
+                // TODO(shahzad): @bug @priority support for args on stack
+                var call_reg = LinuxCallingConvRegisters[idx];
+                call_reg.width = 4; // TODO(shahzad)!!!!!: @bug are we really doing this bruh
+
+                // TODO(shahzad): @bug @spill the registers if they are in use
+                if (operand != .Register or (operand == .Register and operand.Register.id != call_reg.id)) {
+                    assert(self.is_reg_available(call_reg));
+                }
+                self.reg_alloc2(call_reg.id.to_int());
+
+                try self.mov_op_to_reg(operand, call_reg);
+            }
+            _ = try self.program_builder.append_fmt("   call {s}\n", .{call_name});
+            return .Void;
         },
         .Void => {
             return .Void;
