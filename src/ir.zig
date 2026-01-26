@@ -5,13 +5,40 @@ const assert = std.debug.assert;
 
 const Ast = @import("ast.zig");
 const Lexer = @import("lexer.zig");
-const Self = @This();
 
+pub const Module = @This();
+
+values: ArrayListManaged(Value) = undefined,
+procs: ArrayListManaged(Procedure) = undefined,
+global_symbols: SymbolTable = undefined,
 allocator: Allocator,
-values: ArrayListManaged(Value),
 
-symbol_table_stack: SymbolTableStack,
-peephole_enabled: bool = true,
+pub fn init(allocator: Allocator) Module {
+    return .{
+        .allocator = allocator,
+        .values = .init(allocator),
+        .procs = .init(allocator),
+        .global_symbols = .init(allocator),
+    };
+}
+
+pub const Options = struct {
+    enable_peephole: bool = false,
+};
+pub const Procedure = struct {
+    name: []const u8,
+    symbol_table_stack: SymbolTableStack,
+    block: Block,
+    mod: *Module,
+    pub fn init(module: *Module, name: []const u8) @This() {
+        return .{
+            .name = name,
+            .symbol_table_stack = .init(module.allocator),
+            .block = .init(module.allocator),
+            .mod = module,
+        };
+    }
+};
 
 const SymbolTableStack = struct {
     allocator: Allocator,
@@ -22,12 +49,12 @@ const SymbolTableStack = struct {
 
     pub fn print_sym_table_stack(
         self: *SymbolTableStack,
-        ctx: Self,
+        module: Module,
     ) void {
         var last_idx: isize = @intCast(self.inner.items.len - 1);
         while (last_idx >= 0) : (last_idx -= 1) {
             std.log.debug("----------start---------------", .{});
-            print_symbol_table(ctx, self.inner.items[@intCast(last_idx)]);
+            print_symbol_table(module, self.inner.items[@intCast(last_idx)]);
             std.log.debug("===========end================", .{});
             std.log.debug("", .{});
         }
@@ -69,10 +96,10 @@ const SymbolTableStack = struct {
 };
 
 const SymbolTable = std.StringHashMap(usize);
-pub fn print_symbol_table(ctx: Self, sym_table: SymbolTable) void {
+pub fn print_symbol_table(mod: Module, sym_table: SymbolTable) void {
     var iter = sym_table.iterator();
     while (iter.next()) |ent| {
-        const value = get_value(ctx.values, ent.value_ptr.*);
+        const value = get_value(mod.values, ent.value_ptr.*);
         std.log.debug("sym_table entry : {s} -> {}\n", .{ ent.key_ptr.*, value });
     }
 }
@@ -93,8 +120,8 @@ pub const Value = struct {
     },
     lowered_operand_idx: usize = std.math.maxInt(usize), // filled in codegen phase
 
-    pub fn peeophole(self: Value, ctx: *Self, bb: *BasicBlock) Value {
-        _ = ctx;
+    pub fn peeophole(self: Value, mod: *Module, bb: *BasicBlock) Value {
+        _ = mod;
         _ = bb;
         return self;
     }
@@ -106,21 +133,32 @@ pub fn get_value(values: ArrayListManaged(Value), idx: usize) *Value {
 
 // TODO(shahzad): @scope this should hold the type that ts resolves to
 pub const Instruction = struct {
-    type: union(enum) {
-        FunctionDef: struct { label: []const u8 },
-        // stores index in value array
-        BinOp: struct { Op: Lexer.Operators, lhs: usize, rhs: usize },
-        Value: usize,
-        Return: usize,
-        Void: void, // chat should we generate no op?
-    },
+    pub const Type = union(enum) {
+        BinOp: Lexer.Operators,
+        Value,
+        Return,
+        Void, // chat should we generate no op?
+    };
+    type: Type,
+    operands: ArrayListManaged(usize),
     produces: usize = std.math.maxInt(usize),
-    pub fn peephole(self: *Instruction, ctx: *Self, bb: *BasicBlock) !void {
+
+    pub fn init(allocator: Allocator, inst_type: Instruction.Type, produces: ?usize, operands: []const usize) !@This() {
+        var ops: ArrayListManaged(usize) = .init(allocator);
+
+        try ops.appendSlice(operands);
+        return .{
+            .type = inst_type,
+            .operands = ops,
+            .produces = produces orelse std.math.maxInt(usize),
+        };
+    }
+    pub fn peephole(self: *Instruction, mod: *Module, bb: *BasicBlock) !void {
         _ = bb;
         switch (self.type) {
             .BinOp => |as_binop| {
-                const lhs = get_value(ctx.values, as_binop.lhs);
-                const rhs = get_value(ctx.values, as_binop.rhs);
+                const lhs = get_value(mod.values, self.operands.items[0]);
+                const rhs = get_value(mod.values, self.operands.items[1]);
 
                 if (lhs.type == .Const and rhs.type == .Const) {
                     self.type = .Void;
@@ -128,7 +166,7 @@ pub const Instruction = struct {
                     const lhs_as_const = lhs.type.Const.Int;
                     const rhs_as_const = rhs.type.Const.Int;
 
-                    const result = switch (as_binop.Op) {
+                    const result = switch (as_binop) {
                         .Add => @addWithOverflow(lhs_as_const, rhs_as_const).@"0",
                         .Sub => @subWithOverflow(lhs_as_const, rhs_as_const).@"0",
                         .Mul => @mulWithOverflow(lhs_as_const, rhs_as_const).@"0",
@@ -136,7 +174,7 @@ pub const Instruction = struct {
                         else => unreachable, // unimplemented
                     };
 
-                    const value = get_value(ctx.values, self.produces);
+                    const value = get_value(mod.values, self.produces);
                     value.* = .{
                         .type = .{ .Const = .{ .Int = result } },
                     };
@@ -157,9 +195,9 @@ pub const BasicBlock = struct {
     pub fn init(allocator: Allocator) BasicBlock {
         return .{ .insts = .init(allocator) };
     }
-    pub fn optimize(bb: *BasicBlock, ctx: *Self) !void {
+    pub fn optimize(bb: *BasicBlock, mod: *Module) !void {
         for (bb.insts.items) |*inst| {
-            try inst.peephole(ctx, bb);
+            try inst.peephole(mod, bb);
         }
         // TODO(shahzad): @fixme remove all void instructions
     }
@@ -170,38 +208,20 @@ pub const Block = struct {
         return .{ .basic_blocks = .init(allocator) };
     }
 };
-
-pub fn init(allocator: Allocator) Self {
-    return .{
-        .allocator = allocator,
-        .values = .init(allocator),
-        .symbol_table_stack = .init(allocator),
-    };
-}
-
-pub fn parse_binop(self: *Self, bin_op: *const Ast.BinaryOperation, insts: *ArrayListManaged(Instruction)) anyerror!usize {
-    const lhs = try self.parse_expr(bin_op.lhs, insts);
-    const rhs = try self.parse_expr(bin_op.rhs, insts);
-
-    try self.values.append(.{ .type = .Result });
-    const dest = self.values.items.len - 1;
-    try insts.append(.{ .type = .{ .BinOp = .{ .Op = bin_op.op, .lhs = lhs, .rhs = rhs } }, .produces = dest });
-    return dest;
-}
-pub fn parse_expr(self: *Self, expr: *const Ast.Expression, insts: *ArrayListManaged(Instruction)) anyerror!usize {
+pub fn parse_expr(mod: *Module, proc: *Procedure, expr: *const Ast.Expression, insts: *ArrayListManaged(Instruction)) anyerror!usize {
     switch (expr.*) {
         .BinOp => |as_binop| {
-            return try self.parse_binop(&as_binop, insts);
+            return try mod.parse_binop(proc, &as_binop, insts);
         },
         .LiteralInt => |as_literal| {
-            try self.values.append(.{ .type = .{ .Const = .{ .Int = as_literal } } });
-            return self.values.items.len - 1;
+            try mod.values.append(.{ .type = .{ .Const = .{ .Int = as_literal } } });
+            return mod.values.items.len - 1;
         },
         .Var => |as_var| {
-            const var_as_value = self.symbol_table_stack.get_sym_value_idx(as_var);
+            const var_as_value = proc.symbol_table_stack.get_sym_value_idx(as_var);
             if (var_as_value == null) {
                 std.log.err("symbol '{s}' not present in symbol table", .{as_var});
-                self.symbol_table_stack.print_sym_table_stack(self.*);
+                proc.symbol_table_stack.print_sym_table_stack(mod.*);
                 @panic("symbol not present in the table!");
             }
             return var_as_value.?;
@@ -210,35 +230,60 @@ pub fn parse_expr(self: *Self, expr: *const Ast.Expression, insts: *ArrayListMan
     }
     unreachable;
 }
+pub fn parse_binop(mod: *Module, proc: *Procedure, bin_op: *const Ast.BinaryOperation, insts: *ArrayListManaged(Instruction)) anyerror!usize {
+    const lhs = try mod.parse_expr(proc, bin_op.lhs, insts);
 
-pub fn parse_block(self: *Self, block: *const Ast.Block) anyerror!BasicBlock {
-    var basic_block: BasicBlock = .init(self.allocator);
-    for (block.stmts.items) |stmt| {
+    const rhs = try mod.parse_expr(proc, bin_op.rhs, insts);
+
+    try mod.values.append(.{ .type = .Result });
+    const dest = mod.values.items.len - 1;
+    try insts.append(try .init(proc.mod.allocator, .{ .BinOp = bin_op.op }, dest, &[_]usize{ lhs, rhs }));
+    return dest;
+}
+pub fn parse_block(mod: *Module, proc: *Procedure, ast_block: *const Ast.Block, ir_block: *Block) anyerror!void {
+    var basic_block: *BasicBlock = try ir_block.basic_blocks.addOne();
+    basic_block.* = .init(mod.allocator);
+    for (ast_block.stmts.items) |stmt| {
         switch (stmt) {
             .Expr => {},
             .Return => |as_ret| {
-                const value_id = try self.parse_expr(&as_ret, &basic_block.insts);
-                try basic_block.insts.append(.{ .type = .{ .Return = value_id } });
+                const value_id = try mod.parse_expr(proc, &as_ret, &basic_block.insts);
+
+                try basic_block.insts.append(try .init(mod.allocator, .Return, null, &[_]usize{value_id}));
             },
             .VarDefStack => |as_var_def| {
                 const var_name = as_var_def.name;
                 const value_id = if (as_var_def.expr != .NoOp)
-                    try self.parse_expr(&as_var_def.expr, &basic_block.insts)
+                    try mod.parse_expr(proc, &as_var_def.expr, &basic_block.insts)
                 else blk: {
-                    try self.values.append(.{ .type = .Result });
-                    break :blk self.values.items.len - 1;
+                    try mod.values.append(.{ .type = .Result });
+                    break :blk mod.values.items.len - 1;
                 };
-                try self.symbol_table_stack.set_sym(var_name, value_id);
+                try proc.symbol_table_stack.set_sym(var_name, value_id);
             },
             else => unreachable,
         }
     }
-    return basic_block;
 }
 
-pub fn from_proc(self: *Self, proc: *const Ast.ProcDef) !BasicBlock {
-    try self.symbol_table_stack.new_frame();
-    var bb = try self.parse_block(proc.block);
-    if (self.peephole_enabled) try bb.optimize(self);
-    return bb;
+pub fn compile_proc(mod: *Module, proc_def: *const Ast.ProcDef, opts: Options) !Procedure {
+    var proc: Procedure = .init(mod, proc_def.decl.name);
+    try proc.symbol_table_stack.new_frame();
+    // TODO(shahzad): @bug @scope we have to have more than one basic block
+    try mod.parse_block(&proc, proc_def.block, &proc.block);
+
+    if (opts.enable_peephole) {
+        for (proc.block.basic_blocks.items) |*bb| try bb.*.optimize(mod);
+    }
+    return proc;
+}
+
+pub fn compile_mod(allocator: Allocator, module: *Ast.Module, opts: Options) !Module {
+    var mod: Module = .init(allocator);
+    var iter = module.proc_defs.iterator(0);
+    while (iter.next()) |it| {
+        const proc = try mod.compile_proc(it, opts);
+        try mod.procs.append(proc);
+    }
+    return mod;
 }

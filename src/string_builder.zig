@@ -18,8 +18,12 @@ pub fn print_fmt(self: *Self, comptime fmt: []const u8, args: anytype) ![]u8 {
     try self.string.resize(format_required_size);
     return try std.fmt.bufPrint(self.string.items, fmt, args);
 }
-pub fn reset(self: *Self) void {
-    self.string.clearRetainingCapacity();
+
+pub fn mark(self: *Self) usize {
+    return self.string.items.len;
+}
+pub fn reset(self: *Self, mark_: usize) void {
+    self.string.items.len = mark_;
 }
 
 pub const Fixed = struct {

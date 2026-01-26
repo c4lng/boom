@@ -34,9 +34,7 @@ pub const Register = struct {
     };
     id: Id,
     width: u8 = 69,
-    pub fn to_string(self: @This()) [4]u8 {
-        var buf = [4]u8{ 0, 0, 0, 0 };
-        var builder = StringBuilder.Fixed.init(&buf);
+    pub fn to_string(self: @This(), builder: *StringBuilder) ![]u8 {
         var prefix = switch (self.width) {
             inline 1, 2 => "",
             inline 4 => "e",
@@ -65,8 +63,8 @@ pub const Register = struct {
                 break :blk @tagName(value);
             },
         };
-        _ = builder.print_fmt("{s}{s}{s}", .{ prefix, middle, postfix }) catch unreachable;
-        return buf;
+        // TODO(shahzad): better names
+        return builder.print_fmt("{s}{s}{s}", .{ prefix, middle, postfix });
     }
 };
 
@@ -91,7 +89,7 @@ pub fn ensure_reg(self: *Self, operand: Operand) !Register {
         .Register => |as_reg| return as_reg,
         .Immediate => |imm_value| {
             const reg = self.reg_alloc();
-            try self.load_imm_to_reg(imm_value, &reg.to_string());
+            try self.load_imm_to_reg(imm_value, reg);
             return reg;
         },
         .Memory => unreachable,
@@ -129,19 +127,21 @@ pub fn init(allocator: Allocator, values: ArrayListManaged(Ir.Value)) !Self {
 }
 
 // TODO(shahzad): @scope @priority register should be a structure
-pub fn load_imm_to_reg(self: *Self, imm_value: u64, reg: []const u8) !void {
-    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ imm_value, reg });
+pub fn load_imm_to_reg(self: *Self, imm_value: u64, reg: Register) !void {
+    _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ imm_value, try reg.to_string(&self.scratch_buffer) });
 }
 pub fn mov_reg_to_reg(self: *Self, src: Register, dst: Register) !void {
     if (src.id == dst.id) return;
-    _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ src.to_string(), dst.to_string() });
+    _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ try src.to_string(&self.scratch_buffer), try dst.to_string(&self.scratch_buffer) });
 }
 pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.BasicBlock) anyerror!Operand {
+    const mark = self.scratch_buffer.mark();
+    defer self.scratch_buffer.reset(mark);
     // TODO(shahzad): @bug @priority free rhs register
     switch (inst.type) {
         .BinOp => |as_binop| {
-            var lhs = try self.resolve_value(get_value(self.values, as_binop.lhs), bb);
-            var rhs = try self.resolve_value(get_value(self.values, as_binop.rhs), bb);
+            var lhs = try self.resolve_value(get_value(self.values, inst.operands.items[0]), bb);
+            var rhs = try self.resolve_value(get_value(self.values, inst.operands.items[1]), bb);
 
             var lhs_reg: Register = undefined;
 
@@ -157,15 +157,15 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                     lhs_reg = reg;
                     // NOTE(shahzad): @bug @priority hardcoded
                     lhs_reg.width = 4;
-                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{lhs_reg.to_string()});
+                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{try lhs_reg.to_string(&self.scratch_buffer)});
                 },
                 .Immediate => |imm_value| {
                     lhs_reg = self.reg_alloc();
                     // NOTE(shahzad): @bug @priority hardcoded
                     lhs_reg.width = 4;
-                    const reg_as_str = lhs_reg.to_string();
-                    try self.load_imm_to_reg(imm_value, &reg_as_str);
-                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{reg_as_str});
+                    try self.load_imm_to_reg(imm_value, lhs_reg);
+                    const lhs_as_str = try lhs_reg.to_string(&self.scratch_buffer);
+                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{lhs_as_str});
                 },
                 .Memory => unreachable,
                 .Void => unreachable,
@@ -175,7 +175,7 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                     var rhs_reg = reg;
                     // NOTE(shahzad): @bug @priority hardcoded
                     rhs_reg.width = 4;
-                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{rhs_reg.to_string()});
+                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{try rhs_reg.to_string(&self.scratch_buffer)});
                 },
                 .Immediate => |imm_value| {
                     break :blk try self.scratch_buffer.append_fmt("${}", .{imm_value});
@@ -183,7 +183,7 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                 .Memory => unreachable,
                 .Void => unreachable,
             };
-            switch (as_binop.Op) {
+            switch (as_binop) {
                 .Add => {
                     _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
                 },
@@ -213,10 +213,10 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                         }
                     }
 
-                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{rhs_reg.to_string()});
+                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{try rhs_reg.to_string(&self.scratch_buffer)});
                     try self.mov_reg_to_reg(a_reg, lhs_reg);
 
-                    if (tmp_ax_hold_reg) |tmp_reg|{
+                    if (tmp_ax_hold_reg) |tmp_reg| {
                         try self.mov_reg_to_reg(tmp_reg, a_reg);
                         self.reg_free(tmp_reg);
                     }
@@ -225,15 +225,14 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                 },
                 else => unreachable, // unimplemented
             }
-            self.scratch_buffer.reset();
 
             var dst = get_value(self.values, inst.produces);
             _ = try self.computed_values.append(.{ .Register = lhs_reg });
             dst.lowered_operand_idx = self.computed_values.items.len - 1;
             return .{ .Register = lhs_reg };
         },
-        .Return => |as_ret_idx| {
-            const value = get_value(self.values, as_ret_idx);
+        .Return => {
+            const value = get_value(self.values, inst.operands.items[0]);
             const operand = try self.resolve_value(value, bb);
             switch (operand) {
                 .Immediate => |imm_value| {
@@ -241,8 +240,7 @@ pub fn compile_inst(self: *Self, inst: *const Ir.Instruction, bb: *const Ir.Basi
                         @panic("codegen violation: RAX is in use!");
                     }
                     const reg: Register = .{ .id = .A, .width = 8 };
-                    const reg_as_str = reg.to_string();
-                    try self.load_imm_to_reg(imm_value, &reg_as_str);
+                    try self.load_imm_to_reg(imm_value, reg);
                     _ = try self.program_builder.append_fmt("   ret\n", .{});
                     return .Void;
                 },
@@ -283,7 +281,8 @@ pub fn resolve_value(self: *Self, value: *const Ir.Value, bb: *const Ir.BasicBlo
     }
 }
 
-pub fn compile_bb(self: *Self, bb: *const Ir.BasicBlock) !void {
+pub fn compile_bb(self: *Self, mod: *Ir.Module, bb: *const Ir.BasicBlock) !void {
+    _ = mod;
     for (bb.insts.items) |*inst| {
         const operand = try self.compile_inst(inst, bb);
         try self.computed_values.append(operand);
@@ -297,4 +296,41 @@ pub fn compile_bb(self: *Self, bb: *const Ir.BasicBlock) !void {
     std.debug.print("--------------------------------------------------\n", .{});
     std.debug.print("{s}\n", .{self.program_builder.string.items});
     std.debug.print("--------------------------------------------------\n", .{});
+}
+fn compile_proc_prologue(self: *Self, proc: *Ir.Procedure) !void {
+    _ = try self.program_builder.append_fmt("{s}:\n", .{proc.name});
+    _ = try self.program_builder.append_fmt("   mov %rsp, %rbp\n", .{});
+    // TODO(shahzd): @bug @priority pre allocate the required size for stack
+    // _ = try self.program_builder.append_fmt("   sub ${}, %rsp\n", .{proc.total_stack_var_offset});
+}
+fn compile_proc_epilogue(self: *Self, proc: *Ir.Procedure) !void {
+    _ = proc;
+    // TODO(shahzd): @bug deallocate the stack (this requires pre computed stack size)
+    // TODO(shahzad): @bug @priority add return value :sob:
+
+    _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
+    _ = try self.program_builder.append_fmt("   ret\n", .{});
+}
+
+fn compile_block(self: *Self, mod: *Ir.Module, block: *Ir.Block) anyerror!void {
+    for (block.basic_blocks.items) |*bb| {
+        try self.compile_bb(mod, bb);
+    }
+}
+pub fn compile_proc(self: *Self, mod: *Ir.Module, proc: *Ir.Procedure) !void {
+    try self.compile_proc_prologue(proc);
+    try self.compile_block(mod, &proc.block);
+    try self.compile_proc_epilogue(proc);
+}
+
+pub fn compile_mod(self: *Self, mod: *Ir.Module) !void {
+    _ = try self.program_builder.append_fmt(".section .text\n", .{});
+    // TODO(shahzad): @bug @priority only if we have main
+    _ = try self.program_builder.append_fmt(".global main\n", .{});
+    for (mod.procs.items) |*proc| {
+        try self.compile_proc(mod, proc);
+    }
+}
+pub fn get_generated_assembly(self: *const Self) []const u8 {
+    return self.program_builder.string.items;
 }

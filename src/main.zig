@@ -71,15 +71,11 @@ pub const Compiler = struct {
             std.log.debug("Error Occured {}", .{err});
             return err;
         };
-        var ir = Ir.init(self.allocator);
-        var ir_son = try ir.from_proc(module.proc_defs.at(0));
-        self.code_gen = try CodeGen.init(self.allocator, ir.values);
-        try self.code_gen.compile_bb(&ir_son);
-        // try self.code_gen.compile_son(&ir_son);
-        
-        // try self.code_gen.compile_son(&ir_son);
-        // self.code_gen = CodeGen.init(self.allocator);
-        // try self.code_gen.compile_mod(&module);
+        var mod = try Ir.compile_mod(self.allocator, &module, .{});
+        self.code_gen = try CodeGen.init(self.allocator, mod.values);
+        try self.code_gen.compile_mod(&mod);
+        try self.build_asm_file(true);
+
     }
 
     pub fn build_asm_file(self: Self, save_asm_file: bool) !void {

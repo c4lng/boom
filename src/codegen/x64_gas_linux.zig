@@ -687,8 +687,8 @@ fn compile_proc_prologue(self: *Self, procedure: *Ast.ProcDef) !void {
     _ = try self.program_builder.append_fmt("   mov %rsp, %rbp\n", .{});
     _ = try self.program_builder.append_fmt("   sub ${}, %rsp\n", .{procedure.total_stack_var_offset});
     for (procedure.decl.args_list.items, 0..) |arg, i| {
-        const register = self.get_callcov_arg_register( i, arg.meta.size);
-        _ = try self.program_builder.append_fmt("   mov %{s}, -{}(%rbp)\n", .{  register, arg.offset });
+        const register = self.get_callcov_arg_register(i, arg.meta.size);
+        _ = try self.program_builder.append_fmt("   mov %{s}, -{}(%rbp)\n", .{ register, arg.offset });
     }
 
     //for (procedure.decl.args_list.items) |arguments| {
