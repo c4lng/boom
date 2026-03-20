@@ -74,8 +74,12 @@ pub const Compiler = struct {
         var mod = try Ir.compile_mod(self.allocator, &module, .{});
         self.code_gen = try CodeGen.init(self.allocator, mod.values);
         try self.code_gen.compile_mod(&mod);
-        try self.build_asm_file(true);
 
+        std.debug.print("generated assembly", .{});
+        std.debug.print("--------------------------------------------------\n", .{});
+        std.debug.print("{s}\n", .{self.code_gen.get_generated_assembly()});
+        std.debug.print("--------------------------------------------------\n", .{});
+        try self.build_asm_file(true);
     }
 
     pub fn build_asm_file(self: Self, save_asm_file: bool) !void {

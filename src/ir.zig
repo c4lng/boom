@@ -9,28 +9,50 @@ const Lexer = @import("lexer.zig");
 pub const Module = @This();
 
 const SymbolTable = std.StringHashMap(usize);
-values: ArrayListManaged(Value) = undefined,
-procs: ArrayListManaged(Procedure) = undefined,
+nb_consts_strs: usize = 0,
+values: ArrayListManaged(Value),
+procs: ArrayListManaged(Procedure),
+proc_decls: ArrayListManaged(ProcedureDecl),
 symbols: SymbolTable = undefined,
 allocator: Allocator,
 
-pub fn init(allocator: Allocator) Module {
-    return .{
+pub fn init(allocator: Allocator) !Module {
+    var this: Module = .{
         .allocator = allocator,
         .values = .init(allocator),
         .procs = .init(allocator),
+        .proc_decls = .init(allocator),
         .symbols = .init(allocator),
     };
+    try this.values.append(.{ .type = .Void });
+    return this;
 }
 
 pub const Options = struct {
     enable_peephole: bool = false,
 };
+pub const ProcedureDecl = struct {
+    name: []const u8,
+    mod: *Module,
+    args: ArrayListManaged(usize),
+    produces: usize,
+    extrn: bool = true,
+    pub fn init(mod: *Module, name: []const u8, value_idx: usize) @This() {
+        return .{
+            .name = name,
+            .mod = mod,
+            .args = .init(mod.allocator),
+            .produces = value_idx,
+        };
+    }
+};
+
 pub const Procedure = struct {
     name: []const u8,
     symbol_table_stack: SymbolTableStack,
     block: Block,
     mod: *Module,
+    // TODO(shahzad): @priority we do not support arguments
     args: ArrayListManaged(usize),
     produces: usize,
 
@@ -111,6 +133,7 @@ pub fn print_symbol_table(mod: Module, sym_table: SymbolTable) void {
 
 const Data = union(enum) {
     Int: usize,
+    LiteralString: struct { inner: []const u8, id: usize },
 };
 pub const Value = struct {
     // NOTE(shahzad):  ValueId means that this depends on some other value
@@ -122,6 +145,7 @@ pub const Value = struct {
         Const: Data,
         ValueId: usize,
         Result: void,
+        Void,
     },
     lowered_operand_idx: usize = std.math.maxInt(usize), // filled in codegen phase
 
@@ -258,7 +282,15 @@ pub fn parse_expr(mod: *Module, proc: *Procedure, expr: *const Ast.Expression, i
             return proc_return_value.?;
         },
 
-        else => unreachable,
+        .LiteralString => |as_str| {
+            try mod.values.append(.{ .type = .{ .Const = .{ .LiteralString = .{ .inner = as_str, .id = mod.nb_consts_strs } } } });
+            mod.nb_consts_strs += 1;
+            return mod.values.items.len - 1;
+        },
+        else => |kind| {
+            std.log.err("expr kind {} is not implemented", .{kind});
+            unreachable;
+        },
     }
     unreachable;
 }
@@ -301,7 +333,6 @@ pub fn parse_block(mod: *Module, proc: *Procedure, ast_block: *const Ast.Block, 
 }
 
 pub fn compile_proc(mod: *Module, proc_def: *const Ast.ProcDef, opts: Options) !Procedure {
-
     // TODO(shahzad): @bug @priority figure out how to use types and shit from type checker
     // TODO(shahzad): @scope figure out how to do inlining
     // TODO(shahzad): @bug @scope we have to have more than one basic block
@@ -311,7 +342,7 @@ pub fn compile_proc(mod: *Module, proc_def: *const Ast.ProcDef, opts: Options) !
         const proc_return_value = try mod.values.addOne();
         proc_return_value.type = .Result;
         break :blk mod.values.items.len - 1;
-    } else std.math.maxInt(usize);
+    } else 0;
 
     var proc: Procedure = .init(mod, proc_name, value_idx);
 
@@ -325,10 +356,29 @@ pub fn compile_proc(mod: *Module, proc_def: *const Ast.ProcDef, opts: Options) !
     return proc;
 }
 
+pub fn compile_proc_decl(mod: *Module, proc_decl: *const Ast.ProcDecl) !ProcedureDecl {
+    const proc_name = proc_decl.name;
+    const value_idx = if (!std.mem.eql(u8, proc_decl.return_type.type, "void")) blk: {
+        const proc_return_value = try mod.values.addOne();
+        proc_return_value.type = .Result;
+        break :blk mod.values.items.len - 1;
+    } else 0;
+
+    const proc: ProcedureDecl = .init(mod, proc_name, value_idx);
+    try mod.symbols.put(proc_name, value_idx);
+
+    return proc;
+}
+
 pub fn compile_mod(allocator: Allocator, module: *Ast.Module, opts: Options) !Module {
-    var mod: Module = .init(allocator);
-    var iter = module.proc_defs.iterator(0);
-    while (iter.next()) |it| {
+    var mod: Module = try .init(allocator);
+    var proc_decl_iter = module.proc_decls.iterator(0);
+    while (proc_decl_iter.next()) |it| {
+        const proc = try mod.compile_proc_decl(it);
+        try mod.proc_decls.append(proc);
+    }
+    var proc_def_iter = module.proc_defs.iterator(0);
+    while (proc_def_iter.next()) |it| {
         const proc = try mod.compile_proc(it, opts);
         try mod.procs.append(proc);
     }
