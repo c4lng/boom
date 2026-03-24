@@ -16,18 +16,18 @@ strings: StringBuilder,
 computed_values: ArrayListManaged(Operand),
 values: ArrayListManaged(Ir.Value),
 used_strings: StringHashMap([]const u8),
-registers: u16 = 0b1111111110000000,
+registers: u9 = 0b000000000,
 
 // TODO(shahzad): @scope duplication put this in utils or smth
 const get_value = Ir.get_value;
 
 const LinuxCallingConvRegisters = [_]Register{
-    .{ .id = .DI },
-    .{ .id = .SI },
-    .{ .id = .D },
-    .{ .id = .C },
-    .{ .id = .r8 },
-    .{ .id = .r9 },
+    .{ .id = .DI, .width = 8 },
+    .{ .id = .SI, .width = 8 },
+    .{ .id = .D, .width = 8 },
+    .{ .id = .C, .width = 8 },
+    .{ .id = .r8, .width = 8 },
+    .{ .id = .r9, .width = 8 },
 };
 
 pub const Register = struct {
@@ -35,20 +35,31 @@ pub const Register = struct {
         // we only give a shit about callee saved register
         // that's why the order is like that
         // zig fmt: off
-        A    =  0,   C    =  1,   D    =  2,   SI   =  3,   DI  =  4,
-        r8   =  5,   r9   =  6,   r10  =  7,   r11  =  8,   B   =  9,
-        r12  =  10,  r13  =  11,  r14  =  12,  r15  =  13,
+        NULL  =  0,   A    =  1,   C    =  2,   D    =  3,   SI   =  4,
+        DI    =  5,   r8   =  6,   r9   =  7,   r10  =  8,   r11  =  9,
+        B     =  10,  r12  =  11,  r13  =  12,  r14  =  13,  r15  =  14,
         // zig fmt: on
         pub inline fn to_int(id: Id) u8 {
             return @intFromEnum(id);
         }
+        pub inline fn from_int(id: u8) Id {
+            return @enumFromInt(id);
+        }
     };
+
     id: Id,
-    width: u8 = 69,
+    width: u8,
+    pub fn make(id: Id, width: u8) Register {
+        return .{ .id = id, .width = width };
+    }
+    pub fn _null() Register {
+        return .{ .id = .NULL, .width = 8 };
+    }
     // i stole this from ChatGPT and i am not proud of it :sob::sob:
     pub fn to_string(self: @This()) []const u8 {
         const w = self.width;
         return switch (self.id) {
+            .NULL => "null",
             .A => reg_name(w, "al", "ax", "eax", "rax"),
             .B => reg_name(w, "bl", "bx", "ebx", "rbx"),
             .C => reg_name(w, "cl", "cx", "ecx", "rcx"),
@@ -89,43 +100,98 @@ pub const Operand = struct {
         Memory: Memory,
         Void: void,
     },
+    pub fn as_compiled_string(self: *Operand, sb: *StringBuilder) ![]const u8 {
+        const compiled = blk: switch (self.kind) {
+            .Register => |reg| {
+                break :blk try sb.append_fmt("%{s}", .{reg.to_string()});
+            },
+            .Immediate => |imm_value| {
+                break :blk try sb.append_fmt("${}", .{imm_value});
+            },
+            .Memory => unreachable,
+            .Void => unreachable,
+        };
+        return compiled;
+    }
 };
+const RegAllocInfo = struct { requested: Register, to_spill: Register };
 
-pub fn ensure_reg(self: *Self, operand: Operand) !Register {
+pub fn ensure_reg(self: *Self, operand: Operand, to: Register) !RegAllocInfo {
     switch (operand.kind) {
-        .Register => |as_reg| return as_reg,
+        .Register => |as_reg| return .{ .requested = as_reg, .to_spill = ._null() },
         .Immediate => |imm_value| {
-            const reg = self.reg_alloc();
+            // TODO(shahzad): hardcoded
+            if (to.id != .NULL) {
+                const alloc_info = self.reg_alloc2(to.id, to.width);
+                if (alloc_info.to_spill.id != .NULL) {
+                    try self.mov_reg_to_reg(alloc_info.requested, alloc_info.to_spill);
+                }
+                try self.load_imm_to_reg(imm_value, alloc_info.requested);
+                return alloc_info;
+            }
+            const reg = self.reg_alloc(4);
             try self.load_imm_to_reg(imm_value, reg);
-            return reg;
+            return .{ .requested = reg, .to_spill = ._null() };
         },
         .Memory => unreachable,
         .Void => unreachable,
     }
 }
 
-// TODO(shahzad): @refactor rename
-pub fn reg_alloc2(self: *Self, idx: u16) void {
-    const reg = Register{ .id = @enumFromInt(idx) };
-    assert(self.is_reg_available(reg));
-    self.registers ^= @as(u16, @intCast(1)) << @intCast(15 - idx);
+pub fn make_register_mask(registers: []Register.Id) u9 {
+    var mask: u9 = 0;
+    for (registers) |id| {
+        const bit_idx = @as(u9, @intCast(1)) << @intCast(id.to_int() - 1);
+        mask ^= bit_idx;
+    }
+    return mask;
 }
-// todo(shahzad): @priority this is pkd bru
-pub fn reg_alloc(self: *Self) Register {
-    const idx = @clz(self.registers);
-    assert(idx <= 10); // we have allocated too much and went to callee Register's boundary
-    self.registers ^= @as(u16, @intCast(1)) << @intCast(15 - idx);
-    return .{ .id = @enumFromInt(idx) };
+pub fn reg_alloc_except(self: *Self, width: u8, mask: u9) Register {
+    const original = self.registers;
+
+    self.registers = mask | self.registers;
+    const register = self.reg_alloc(width);
+    self.registers = original;
+    return register;
+}
+pub fn reg_alloc2(self: *Self, id: Register.Id, width: u8) RegAllocInfo {
+    const reg: Register = .make(id, width);
+    if (!self.is_reg_available(reg)) {
+        const spill_reg = self.reg_alloc(width);
+        return .{ .requested = reg, .to_spill = spill_reg };
+    }
+
+    const bit_idx = @as(u9, @intCast(1)) << @intCast(id.to_int() - 1);
+    self.registers ^= bit_idx;
+    std.log.info("bit_idx: {x}", .{bit_idx});
+    std.log.info("allocated register {} state :{x}", .{ id, self.registers });
+    assert(!self.is_reg_available(reg));
+    return .{ .requested = reg, .to_spill = ._null() };
+}
+
+pub fn reg_alloc(self: *Self, width: u8) Register {
+    const lowest_unset_bit = ~self.registers & (self.registers + 1);
+    if (lowest_unset_bit == 0) return ._null();
+
+    const idx = 9 - @clz(lowest_unset_bit);
+    assert(idx >= 0 and idx < 64);
+
+    const reg_info = self.reg_alloc2(@enumFromInt(idx), width);
+    assert(reg_info.to_spill.id == .NULL);
+    return reg_info.requested;
 }
 pub fn is_reg_available(self: *Self, reg: Register) bool {
-    const bit_idx: u4 = 15 - @as(u4, @intCast(reg.id.to_int()));
-    return (self.registers >> (bit_idx)) & 1 == 1;
+    const bit_idx: u4 = @as(u4, @intCast(reg.id.to_int())) - 1;
+    return (self.registers >> (bit_idx)) & 1 == 0;
 }
 pub fn reg_free(self: *Self, reg: Register) void {
-    const idx: u8 = reg.id.to_int();
-    const bit_idx: u4 = 15 - @as(u4, @intCast(idx));
+    std.debug.print("freeing register {}\n", .{reg.id});
+    if (reg.id == .NULL) return;
+    const mask: u9 = @as(u9, 1) << (@as(u4, @intCast(reg.id.to_int())) - 1);
     assert(!self.is_reg_available(reg));
-    self.registers ^= @as(u16, @intCast(1)) << @intCast(bit_idx);
+
+    self.registers ^= mask;
+    assert(self.is_reg_available(reg));
 }
 
 pub fn init(allocator: Allocator, values: ArrayListManaged(Ir.Value)) !Self {
@@ -161,6 +227,7 @@ pub fn load_mem_to_reg(self: *Self, src: Operand.Memory, dst: Register) !void {
         },
     }
 }
+// pub fn spill_reg(self: *Self, from: Register, to: Register) !void {}
 pub fn mov_op_to_reg(self: *Self, src: Operand, dst: Register) !void {
     switch (src.kind) {
         .Register => |as_reg| {
@@ -184,46 +251,23 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, b
             var lhs = try self.resolve_value(get_value(self.values, inst.operands.items[0]), bb);
             var rhs = try self.resolve_value(get_value(self.values, inst.operands.items[1]), bb);
 
-            var lhs_reg: Register = undefined;
-
             std.debug.print("lhs = {}, rhs = {}\n", .{ lhs, rhs });
-            if (lhs.kind == .Immediate and (rhs.kind == .Register or rhs.kind == .Memory)) {
+            if (as_binop != .Div and lhs.kind == .Immediate and (rhs.kind == .Register or rhs.kind == .Memory)) {
                 // if one side is register make it lhs
                 const temp = lhs;
                 lhs = rhs;
                 rhs = temp;
             }
-            const lhs_compiled = blk: switch (lhs.kind) {
-                .Register => |reg| {
-                    lhs_reg = reg;
-                    // NOTE(shahzad): @bug @priority hardcoded
-                    lhs_reg.width = 4;
-                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{lhs_reg.to_string()});
-                },
-                .Immediate => |imm_value| {
-                    lhs_reg = self.reg_alloc();
-                    // NOTE(shahzad): @bug @priority hardcoded
-                    lhs_reg.width = 4;
-                    try self.load_imm_to_reg(imm_value, lhs_reg);
-                    const lhs_as_str = lhs_reg.to_string();
-                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{lhs_as_str});
-                },
-                .Memory => unreachable,
-                .Void => unreachable,
-            };
-            const rhs_compiled = blk: switch (rhs.kind) {
-                .Register => |reg| {
-                    var rhs_reg = reg;
-                    // NOTE(shahzad): @bug @priority hardcoded
-                    rhs_reg.width = 4;
-                    break :blk try self.scratch_buffer.append_fmt("%{s}", .{rhs_reg.to_string()});
-                },
-                .Immediate => |imm_value| {
-                    break :blk try self.scratch_buffer.append_fmt("${}", .{imm_value});
-                },
-                .Memory => unreachable,
-                .Void => unreachable,
-            };
+            const lhs_reg_info = try self.ensure_reg(lhs, if (as_binop == .Div) .make(.A, 4) else ._null());
+            const lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{lhs_reg_info.requested.to_string()});
+            const rhs_compiled = try rhs.as_compiled_string(&self.scratch_buffer);
+
+            var ret_reg: Register = ._null();
+            if (lhs_reg_info.to_spill.id == .NULL) ret_reg = lhs_reg_info.requested else {
+                ret_reg = self.reg_alloc_except(4, Register.Id.D.to_int());
+                if (ret_reg.id == .NULL) unreachable; // we ran out of registers
+            }
+
             switch (as_binop) {
                 .Add => {
                     _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
@@ -237,56 +281,52 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, b
                 .Div => {
                     _ = try self.program_builder.append_fmt("   #-----divide------\n", .{});
 
-                    const a_reg: Register = .{ .width = 8, .id = .A };
-                    var tmp_ax_hold_reg: ?Register = null;
-                    const rhs_reg = try self.ensure_reg(rhs);
-                    if (lhs.kind.Register.id != .A) { // lhs will always be a register
-                        if (self.is_reg_available(a_reg)) {
-                            try self.mov_reg_to_reg(lhs.kind.Register, .{ .width = 8, .id = .A });
-                            self.reg_free(lhs_reg);
-                            lhs_reg.id = .A;
-                        } else {
-                            tmp_ax_hold_reg = self.reg_alloc();
+                    const dx_reg_info = try self.ensure_reg(.{
+                        .kind = .{ .Immediate = 0 },
+                    }, .make(.D, 4));
+                    const rhs_reg_info = try self.ensure_reg(rhs, ._null());
 
-                            // register is not available so we shuffle
-                            try self.mov_reg_to_reg(a_reg, tmp_ax_hold_reg.?);
-                            try self.mov_reg_to_reg(lhs.kind.Register, .{ .width = 8, .id = .A });
-                        }
-                    }
+                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{rhs_reg_info.requested.to_string()});
+                    self.reg_free(rhs_reg_info.requested);
 
-                    _ = try self.program_builder.append_fmt("   idiv %{s}\n", .{rhs_reg.to_string()});
-                    try self.mov_reg_to_reg(a_reg, lhs_reg);
+                    if (dx_reg_info.to_spill.id != .NULL) {
+                        try self.mov_reg_to_reg(dx_reg_info.to_spill, dx_reg_info.requested);
+                        self.reg_free(dx_reg_info.to_spill);
+                    } else self.reg_free(dx_reg_info.requested);
 
-                    if (tmp_ax_hold_reg) |tmp_reg| {
-                        try self.mov_reg_to_reg(tmp_reg, a_reg);
-                        self.reg_free(tmp_reg);
-                    }
+                    try self.mov_reg_to_reg(lhs_reg_info.requested, ret_reg);
 
-                    self.reg_free(rhs_reg);
+                    if (ret_reg.id != lhs_reg_info.requested.id) self.reg_free(lhs_reg_info.requested);
+                    _ = try self.program_builder.append_fmt("   #------------------\n", .{});
                 },
                 else => unreachable, // unimplemented
             }
 
+            if (lhs_reg_info.to_spill.id != .NULL) {
+                try self.mov_reg_to_reg(lhs_reg_info.to_spill, lhs_reg_info.requested);
+                self.reg_free(lhs_reg_info.to_spill);
+            }
+
             var dst = get_value(self.values, inst.produces);
-            _ = try self.computed_values.append(.{ .kind = .{ .Register = lhs_reg } });
+            _ = try self.computed_values.append(.{ .kind = .{ .Register = ret_reg } });
             dst.lowered_operand_idx = self.computed_values.items.len - 1;
-            return .{ .kind = .{ .Register = lhs_reg } };
+            return .{ .kind = .{ .Register = ret_reg } };
         },
         .Return => {
             const value = get_value(self.values, inst.operands.items[0]);
             const operand = try self.resolve_value(value, bb);
             switch (operand.kind) {
                 .Immediate => |imm_value| {
-                    if (!self.is_reg_available(.{ .id = .A })) {
+                    if (!self.is_reg_available(.make(.A, 4))) {
                         @panic("codegen violation: RAX is in use!");
                     }
-                    const reg: Register = .{ .id = .A, .width = 8 };
+                    const reg: Register = .make(.A, 8);
                     try self.load_imm_to_reg(imm_value, reg);
                     _ = try self.program_builder.append_fmt("   ret\n", .{});
                     return .{ .kind = .Void };
                 },
                 .Register => |reg| {
-                    try self.mov_reg_to_reg(reg, .{ .id = .A, .width = 8 });
+                    try self.mov_reg_to_reg(reg, .make(.A, 8));
                     _ = try self.program_builder.append_fmt("   ret\n", .{});
                     return .{ .kind = .Void };
                 },
@@ -307,7 +347,7 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, b
                 if (operand.kind != .Register or (operand.kind == .Register and operand.kind.Register.id != call_reg.id)) {
                     assert(self.is_reg_available(call_reg));
                 }
-                self.reg_alloc2(call_reg.id.to_int());
+                _ = self.reg_alloc2(call_reg.id, 4);
 
                 try self.mov_op_to_reg(operand, call_reg);
             }
