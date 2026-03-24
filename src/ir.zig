@@ -10,6 +10,7 @@ pub const Module = @This();
 
 const SymbolTable = std.StringHashMap(usize);
 nb_consts_strs: usize = 0,
+nb_basic_blocks: usize = 0,
 values: ArrayListManaged(Value),
 procs: ArrayListManaged(Procedure),
 proc_decls: ArrayListManaged(ProcedureDecl),
@@ -159,11 +160,25 @@ pub const Value = struct {
 pub fn get_value(values: ArrayListManaged(Value), idx: usize) *Value {
     return &values.items[idx];
 }
+pub fn set_value(values: ArrayListManaged(Value), idx: usize, value: Value) void {
+    values.items[idx] = value;
+    @panic("we got lowered operand index in Value... do you really need to use this function?");
+}
 
 // TODO(shahzad): @scope this should hold the type that ts resolves to
 pub const Instruction = struct {
     pub const Type = union(enum) {
         BinOp: Lexer.Operators,
+        Goto: isize, // -1 is goto end
+        ConditionalJump: isize, // condition is in operands
+        ForLoop: struct {
+            type: enum {
+                NonTerminating,
+                SingleArg,
+                TripleArg,
+            },
+            basic_block_idx: usize,
+        },
         Value,
         Return,
         ProcCall: []const u8, // TODO(shahzad): @scope can we remove this and put proc name as a value?
@@ -221,9 +236,11 @@ pub const Instruction = struct {
 };
 
 pub const BasicBlock = struct {
+    id: usize,
+    should_compile: bool,
     insts: ArrayListManaged(Instruction),
-    pub fn init(allocator: Allocator) BasicBlock {
-        return .{ .insts = .init(allocator) };
+    pub fn init(allocator: Allocator, id: usize, should_compile: bool) BasicBlock {
+        return .{ .insts = .init(allocator), .id = id, .should_compile = should_compile };
     }
     pub fn optimize(bb: *BasicBlock, mod: *Module) !void {
         for (bb.insts.items) |*inst| {
@@ -287,12 +304,51 @@ pub fn parse_expr(mod: *Module, proc: *Procedure, expr: *const Ast.Expression, i
             mod.nb_consts_strs += 1;
             return mod.values.items.len - 1;
         },
+        .WhileLoop => |as_while| {
+            const basic_block: *BasicBlock = try proc.block.basic_blocks.addOne();
+            const basic_block_idx = proc.block.basic_blocks.items.len - 1;
+            basic_block.* = .init(mod.allocator, mod.nb_basic_blocks, false);
+            mod.nb_basic_blocks += 1;
+
+            // insts are like this
+            // while_loop (another block){
+            // condition
+            // conditional jump
+            // block
+            // Goto Start
+            // }
+
+            var while_inst: Instruction = try .init(mod.allocator, .{ .ForLoop = .{
+                .type = .SingleArg,
+                .basic_block_idx = basic_block_idx,
+            } }, null, &[_]usize{});
+            try insts.append(while_inst);
+
+            const value_id = try mod.parse_expr(proc, as_while.condition, &basic_block.insts);
+            try while_inst.operands.append(value_id);
+
+            try basic_block.insts.append(try .init(mod.allocator, .{ .ConditionalJump = -1 }, null, &[_]usize{value_id}));
+
+            const while_block = try mod._make_block_from_expr(as_while.expression);
+            try mod.parse_bb(basic_block, proc, &while_block);
+
+            try basic_block.insts.append(try .init(mod.allocator, .{ .Goto = 0 }, null, &[_]usize{}));
+            return undefined;
+        },
         else => |kind| {
             std.log.err("expr kind {} is not implemented", .{kind});
             unreachable;
         },
     }
     unreachable;
+}
+pub fn _make_block_from_expr(mod: Module, expr: *Ast.Expression) !Ast.Block {
+    if (expr.* == .Block) {
+        return expr.Block.*;
+    }
+    var blk: Ast.Block = .init(mod.allocator);
+    try blk.stmts.append(.{ .Expr = expr.* });
+    return blk;
 }
 pub fn parse_binop(mod: *Module, proc: *Procedure, bin_op: *const Ast.BinaryOperation, insts: *ArrayListManaged(Instruction)) anyerror!usize {
     const lhs = try mod.parse_expr(proc, bin_op.lhs, insts);
@@ -304,9 +360,8 @@ pub fn parse_binop(mod: *Module, proc: *Procedure, bin_op: *const Ast.BinaryOper
     try insts.append(try .init(proc.mod.allocator, .{ .BinOp = bin_op.op }, dest, &[_]usize{ lhs, rhs }));
     return dest;
 }
-pub fn parse_block(mod: *Module, proc: *Procedure, ast_block: *const Ast.Block, ir_block: *Block) anyerror!void {
-    var basic_block: *BasicBlock = try ir_block.basic_blocks.addOne();
-    basic_block.* = .init(mod.allocator);
+
+pub fn parse_bb(mod: *Module, basic_block: *BasicBlock, proc: *Procedure, ast_block: *const Ast.Block) anyerror!void {
     for (ast_block.stmts.items) |stmt| {
         switch (stmt) {
             .Expr => |*as_expr| {
@@ -314,7 +369,6 @@ pub fn parse_block(mod: *Module, proc: *Procedure, ast_block: *const Ast.Block, 
             },
             .Return => |as_ret| {
                 const value_id = try mod.parse_expr(proc, &as_ret, &basic_block.insts);
-
                 try basic_block.insts.append(try .init(mod.allocator, .Return, null, &[_]usize{value_id}));
             },
             .VarDefStack => |as_var_def| {
@@ -330,6 +384,12 @@ pub fn parse_block(mod: *Module, proc: *Procedure, ast_block: *const Ast.Block, 
             else => unreachable,
         }
     }
+}
+pub fn parse_block(mod: *Module, proc: *Procedure, ast_block: *const Ast.Block, ir_block: *Block) anyerror!void {
+    const basic_block: *BasicBlock = try ir_block.basic_blocks.addOne();
+    basic_block.* = .init(mod.allocator, mod.nb_basic_blocks, true);
+    mod.nb_basic_blocks += 1;
+    try mod.parse_bb(basic_block, proc, ast_block);
 }
 
 pub fn compile_proc(mod: *Module, proc_def: *const Ast.ProcDef, opts: Options) !Procedure {

@@ -124,6 +124,9 @@ pub const Block = struct {
         Argument,
         Stack,
     };
+    pub fn init(allocator: Allocator) Block {
+        return .{ .outer = null, .stmts = .init(allocator), .stack_vars = .init(allocator) };
+    }
     pub fn find_stack_variable(self: *Self, var_name: []const u8) ?Variable {
         for (self.stack_vars.items) |stack_var| {
             if (std.mem.eql(u8, stack_var.decl.name, var_name)) {

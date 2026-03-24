@@ -70,6 +70,17 @@ pub const Register = struct {
             inline else => |reg_tag| reg_name(w, @tagName(reg_tag) ++ "b", @tagName(reg_tag) ++ "w", @tagName(reg_tag) ++ "d", @tagName(reg_tag)),
         };
     }
+    pub fn change_width(reg: Register, new_width: u8) Register {
+        return .{ .id = reg.id, .width = new_width };
+    }
+    pub fn upcast(reg: Register, new_width: u8) Register {
+        if (reg.width > new_width) @panic("invalid upcast");
+        return reg.change_width(new_width);
+    }
+    pub fn downcast(reg: Register, new_width: u8) Register {
+        if (reg.width < new_width) @panic("invalid downcast");
+        return reg.change_width(new_width);
+    }
 
     inline fn reg_name(
         width: u8,
@@ -242,7 +253,8 @@ pub fn mov_op_to_reg(self: *Self, src: Operand, dst: Register) !void {
         .Void => unreachable,
     }
 }
-pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, bb: *const Ir.BasicBlock) anyerror!Operand {
+pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, proc: *Ir.Procedure, bb_idx: usize) anyerror!Operand {
+    const bb: *Ir.BasicBlock = &proc.block.basic_blocks.items[bb_idx];
     const mark = self.scratch_buffer.mark();
     defer self.scratch_buffer.reset(mark);
     // TODO(shahzad): @bug @priority free rhs register
@@ -299,7 +311,22 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, b
                     if (ret_reg.id != lhs_reg_info.requested.id) self.reg_free(lhs_reg_info.requested);
                     _ = try self.program_builder.append_fmt("   #------------------\n", .{});
                 },
-                else => unreachable, // unimplemented
+
+                .Eq, .Lt, .Gt, .LtEq, .GtEq => |typ| {
+                    const cmp_set_inst = switch (typ) {
+                        .Eq => "sete",
+                        .Lt => "setl",
+                        else => unreachable,
+                    };
+                    _ = try self.program_builder.append_fmt("   cmp {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+                    const ret_reg_downcasted = ret_reg.downcast(1);
+                    _ = try self.program_builder.append_fmt("   {s} %{s}\n", .{ cmp_set_inst, ret_reg_downcasted.to_string() });
+                    _ = try self.program_builder.append_fmt("   movzbl %{s}, %{s}\n", .{ ret_reg_downcasted.to_string(), ret_reg.upcast(4).to_string() });
+                },
+
+                else => |typ| {
+                    std.debug.panic("type {} is unimplemented!", .{typ});
+                }, // unimplemented
             }
 
             if (lhs_reg_info.to_spill.id != .NULL) {
@@ -335,19 +362,17 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, b
             }
         },
         .ProcCall => |call_name| {
+            var used_regs: ArrayListManaged(RegAllocInfo) = .init(self.allocator);
             for (inst.operands.items, 0..) |param_expr_idx, idx| {
                 const value = get_value(self.values, param_expr_idx);
                 const operand = try self.resolve_value(value, bb);
 
                 // TODO(shahzad): @bug @priority support for args on stack
-                var call_reg = LinuxCallingConvRegisters[idx];
-                call_reg.width = 4; // TODO(shahzad)!!!!!: @bug are we really doing this bruh
-
-                // TODO(shahzad): @bug @spill the registers if they are in use
-                if (operand.kind != .Register or (operand.kind == .Register and operand.kind.Register.id != call_reg.id)) {
-                    assert(self.is_reg_available(call_reg));
-                }
-                _ = self.reg_alloc2(call_reg.id, 4);
+                const call_reg = LinuxCallingConvRegisters[idx];
+                // TODO(shahzad)!!!!!: @bug are we really doing this bruh
+                const reg_info = self.reg_alloc2(call_reg.id, 4);
+                assert(reg_info.requested.id != .NULL);
+                try used_regs.append(reg_info);
 
                 try self.mov_op_to_reg(operand, call_reg);
             }
@@ -361,8 +386,53 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, b
             }
             _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
             _ = try self.program_builder.append_fmt("   call {s}{s}\n", .{ call_name, is_plt });
+
+            for (used_regs.items) |info| {
+                if (info.to_spill.id != .NULL) {
+                    try self.mov_reg_to_reg(info.to_spill, info.requested);
+                    self.reg_free(info.to_spill);
+                } else {
+                    self.reg_free(info.requested);
+                }
+            }
+            // we don't support arguments
             return .{ .kind = .Void };
         },
+        .ForLoop => |as_loop| {
+            assert(as_loop.type == .SingleArg);
+            const blk_start_label = try self.t_make_label(as_loop.basic_block_idx, "BLK");
+            _ = try self.program_builder.append_fmt("{s}:\n", .{blk_start_label});
+            try self.compile_bb(mod, proc, as_loop.basic_block_idx, true);
+            const blk_end_label = try self.t_make_label(as_loop.basic_block_idx, "BLK_E");
+            _ = try self.program_builder.append_fmt("{s}:\n", .{blk_end_label});
+            return .{ .kind = .Void };
+        },
+        .ConditionalJump => |where| {
+            const value = get_value(self.values, inst.operands.items[0]);
+            const operand = try self.resolve_value(value, bb);
+            if (operand.kind != .Register) @panic("unreachable!");
+            const reg = operand.kind.Register;
+            _ = try self.program_builder.append_fmt("   test %{s}, %{s}\n", .{ reg.to_string(), reg.to_string() });
+
+            if (where == -1) {
+                const cur_block_id = proc.block.basic_blocks.items[bb_idx].id;
+                const loop_start_label = try self.t_make_label(cur_block_id, "BLK_E");
+                _ = try self.program_builder.append_fmt("   jz {s}\n", .{loop_start_label});
+            } else {
+                unreachable;
+            }
+            return .{ .kind = .Void };
+        },
+        .Goto => |as_goto| {
+            const cur_block = proc.block.basic_blocks.items[bb_idx];
+            if (as_goto != 0) {
+                @panic("trying to use Goto which is not implemented!");
+            }
+            const loop_start_label = try self.scratch_buffer.append_fmt("BLK{d:0>2}", .{cur_block.id});
+            _ = try self.program_builder.append_fmt("   jmp {s}\n", .{loop_start_label});
+            return .{ .kind = .Void };
+        },
+
         .Void => {
             return .{ .kind = .Void };
         },
@@ -371,6 +441,12 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, b
             unreachable;
         },
     }
+}
+pub fn t_make_label(self: *Self, id: usize, fmt: ?[]const u8) ![]const u8 {
+    if (fmt) |_fmt| {
+        return self.scratch_buffer.append_fmt("{s}{d:0>2}", .{ _fmt, id });
+    }
+    return self.scratch_buffer.append_fmt("LD{d:0>2}", .{id});
 }
 pub fn make_label(self: *Self, id: usize) ![]const u8 {
     return self.strings.append_fmt("LD{d:0>2}", .{id});
@@ -403,9 +479,11 @@ pub fn resolve_value(self: *Self, value: *const Ir.Value, bb: *const Ir.BasicBlo
     }
 }
 
-pub fn compile_bb(self: *Self, mod: *Ir.Module, bb: *const Ir.BasicBlock) !void {
+pub fn compile_bb(self: *Self, mod: *Ir.Module, proc: *Ir.Procedure, bb_idx: usize, force_compile: bool) !void {
+    const bb = &proc.block.basic_blocks.items[bb_idx];
+    if (!force_compile and !bb.should_compile) return;
     for (bb.insts.items) |*inst| {
-        const operand = try self.compile_inst(mod, inst, bb);
+        const operand = try self.compile_inst(mod, inst, proc, bb_idx);
         try self.computed_values.append(operand);
         const idx = self.computed_values.items.len - 1;
         // assert(inst.produces != std.math.maxInt(usize)); // NOTE(shahzad): idk
@@ -429,9 +507,9 @@ fn compile_proc_epilogue(self: *Self, proc: *Ir.Procedure) !void {
     _ = try self.program_builder.append_fmt("   ret\n", .{});
 }
 
-fn compile_block(self: *Self, mod: *Ir.Module, block: *Ir.Block) anyerror!void {
-    for (block.basic_blocks.items) |*bb| {
-        try self.compile_bb(mod, bb);
+fn compile_block(self: *Self, mod: *Ir.Module, proc: *Ir.Procedure, block: *Ir.Block) anyerror!void {
+    for (block.basic_blocks.items, 0..) |_, idx| {
+        try self.compile_bb(mod, proc, idx, false);
     }
 }
 
@@ -443,11 +521,11 @@ pub fn compile_proc_decl(self: *Self, proc_decl: *Ir.ProcedureDecl) !void {
 pub fn compile_proc(self: *Self, mod: *Ir.Module, proc: *Ir.Procedure) !void {
     std.debug.print("compiling proc {s}\n", .{proc.name});
     try self.compile_proc_prologue(proc);
-    try self.compile_block(mod, &proc.block);
+    try self.compile_block(mod, proc, &proc.block);
     try self.compile_proc_epilogue(proc);
 }
 
-pub fn compile_data_secition(self: *Self) !void {
+pub fn compile_data_section(self: *Self) !void {
     var it = self.used_strings.iterator();
     _ = try self.program_builder.append_fmt("\n.section .rodata\n", .{});
     while (it.next()) |ent| {
@@ -468,7 +546,7 @@ pub fn compile_mod(self: *Self, mod: *Ir.Module) !void {
         try self.compile_proc(mod, proc);
     }
 
-    try self.compile_data_secition();
+    try self.compile_data_section();
 }
 pub fn get_generated_assembly(self: *const Self) []const u8 {
     return self.program_builder.string.items;
