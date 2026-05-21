@@ -220,8 +220,19 @@ pub fn init(allocator: Allocator, values: ArrayListManaged(Ir.Value)) !Self {
 
 // TODO(shahzad): @scope @priority register should be a structure
 pub fn mov_reg_to_reg(self: *Self, src: Register, dst: Register) !void {
+    var comment: []const u8 = "";
+
+    var _src = src;
     if (src.id == dst.id) return;
-    _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ src.to_string(), dst.to_string() });
+
+    if (src.width > dst.width) {
+        comment = "# loss of information";
+        _src = src.downcast(dst.width);
+    } else {
+        _src = src.upcast(dst.width);
+    }
+
+    _ = try self.program_builder.append_fmt("   mov %{s}, %{s}\n", .{ _src.to_string(), dst.to_string() });
 }
 pub fn load_imm_to_reg(self: *Self, src: u64, dst: Register) !void {
     _ = try self.program_builder.append_fmt("   mov ${}, %{s}\n", .{ src, dst.to_string() });
