@@ -3,10 +3,13 @@ proc main() -> void {
   let a: x32 = 0;
   let b: x32 = 1;
   let c: x32 = 0;
+  a = 0;
+  b = 1;
+  c = 0;
   while a < 1000 {
+    printf("%d\n",a);
     c = a + b;
     b = a;
     a = c;
-    printf("%d\n",a);
   }
 }

@@ -146,6 +146,7 @@ pub const Value = struct {
         Const: Data,
         ValueId: usize,
         Result: void,
+        Temp: void,
         Void,
     },
     lowered_operand_idx: usize = std.math.maxInt(usize), // filled in codegen phase
@@ -359,11 +360,19 @@ pub fn parse_binop(mod: *Module, proc: *Procedure, bin_op: *const Ast.BinaryOper
     const lhs = try mod.parse_expr(proc, bin_op.lhs, insts);
     const rhs = try mod.parse_expr(proc, bin_op.rhs, insts);
 
-    try mod.values.append(.{ .type = .Result });
+    const value =
+        if (bin_op.op == .Ass) blk: {
+            if (bin_op.lhs.* == .Var) {
+                break :blk Value{ .type = .Result };
+            }
+            break :blk Value{ .type = .Temp };
+        } else Value{ .type = .Temp };
+
+    try mod.values.append(value);
     const dest = mod.values.items.len - 1;
 
     if (bin_op.op == .Ass) {
-        if(bin_op.lhs.* == .Var){
+        if (bin_op.lhs.* == .Var) {
             const var_name = bin_op.lhs.Var;
             try proc.symbol_table_stack.set_sym(var_name, dest);
         }

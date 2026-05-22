@@ -339,7 +339,6 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
             const lhs = lhs_;
             const rhs = rhs_;
 
-
             if (as_binop == .Ass and lhs.kind != .Register) {
                 // @note when doing assignment we are making sure that lhs is a register
                 // so that's why we are moving whatever op we have as lhs to a register
@@ -359,7 +358,19 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
 
             switch (as_binop) {
                 .Add => {
-                    _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
+                    const lhs_value = get_value(self.values, inst.operands.items[0]);
+                    if (lhs_value.type != .Temp) {
+                        // this means that lhs register that is probably a variable
+                        // and we should not modify it so we create a register to
+                        // do the addition
+                        // @todo hardcoded
+
+                        const add_store_reg = self.reg_alloc(4);
+                        try self.mov_reg_to_reg(lhs_reg_info.requested, add_store_reg);
+                        _ = try self.program_builder.append_fmt("   add {s}, %{s}\n", .{ rhs_compiled, add_store_reg.to_string() });
+                        ret_reg = add_store_reg;
+
+                    } else _ = try self.program_builder.append_fmt("   add {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
                 },
                 .Sub => {
                     _ = try self.program_builder.append_fmt("   sub {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
@@ -548,6 +559,9 @@ pub fn resolve_value(self: *Self, value: *const Ir.Value, bb: *const Ir.BasicBlo
         .Void => {
             unreachable;
         },
+        .Temp => {
+            return self.computed_values.items[value.lowered_operand_idx];
+    },
     }
 }
 
