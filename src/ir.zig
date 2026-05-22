@@ -357,11 +357,17 @@ pub fn _make_block_from_expr(mod: Module, expr: *Ast.Expression) !Ast.Block {
 }
 pub fn parse_binop(mod: *Module, proc: *Procedure, bin_op: *const Ast.BinaryOperation, insts: *ArrayListManaged(Instruction)) anyerror!usize {
     const lhs = try mod.parse_expr(proc, bin_op.lhs, insts);
-
     const rhs = try mod.parse_expr(proc, bin_op.rhs, insts);
 
     try mod.values.append(.{ .type = .Result });
     const dest = mod.values.items.len - 1;
+
+    if (bin_op.op == .Ass) {
+        if(bin_op.lhs.* == .Var){
+            const var_name = bin_op.lhs.Var;
+            try proc.symbol_table_stack.set_sym(var_name, dest);
+        }
+    }
     try insts.append(try .init(proc.mod.allocator, .{ .BinOp = bin_op.op }, dest, &[_]usize{ lhs, rhs }));
     return dest;
 }

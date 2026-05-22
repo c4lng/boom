@@ -111,7 +111,7 @@ pub const Operand = struct {
         Memory: Memory,
         Void: void,
     },
-    pub fn as_compiled_string(self: *Operand, sb: *StringBuilder) ![]const u8 {
+    pub fn as_compiled_string(self: *const Operand, sb: *StringBuilder) ![]const u8 {
         const compiled = blk: switch (self.kind) {
             .Register => |reg| {
                 break :blk try sb.append_fmt("%{s}", .{reg.to_string()});
@@ -125,17 +125,6 @@ pub const Operand = struct {
         return compiled;
     }
 };
-
-pub fn value_change_operand(self: *Self, value: *Ir.Value, operand: Operand) !void {
-    switch (operand.kind) {
-        .Register => {
-            value.type = .Result;
-        },
-        else => @panic("we need to change the value type too but that is unimplemented!"),
-    }
-    try self.computed_values.append(operand);
-    value.lowered_operand_idx = self.computed_values.items.len - 1;
-}
 
 const RegAllocInfo = struct { requested: Register, to_spill: Register };
 
@@ -171,7 +160,7 @@ pub fn restore_call_registers(self: *Self, mark: u9) !void {
             len += 1;
         }
     }
-    var it: isize = @as(isize,@intCast(len)) - 1;
+    var it: isize = @as(isize, @intCast(len)) - 1;
     while (it >= 0) {
         const register = registers[@intCast(it)];
         std.debug.print("reg {s}\n", .{register.to_string()});
@@ -336,16 +325,20 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
     std.debug.print("this is the instruction we are compiling {}\n", .{inst});
     switch (inst.type) {
         .BinOp => |as_binop| {
-            var lhs = try self.resolve_value(get_value(self.values, inst.operands.items[0]), bb);
-            var rhs = try self.resolve_value(get_value(self.values, inst.operands.items[1]), bb);
+            var lhs_ = try self.resolve_value(get_value(self.values, inst.operands.items[0]), bb);
+            var rhs_ = try self.resolve_value(get_value(self.values, inst.operands.items[1]), bb);
 
-            std.debug.print("lhs = {}, rhs = {}\n", .{ lhs, rhs });
+            std.debug.print("lhs = {}, rhs = {}\n", .{ lhs_, rhs_ });
 
             if (as_binop.is_identity() and
-                lhs.kind == .Immediate and (rhs.kind == .Register or rhs.kind == .Memory))
+                lhs_.kind == .Immediate and (rhs_.kind == .Register or rhs_.kind == .Memory))
             { // if one side is register make it lhs
-                std.mem.swap(Operand, &lhs, &rhs);
+                std.mem.swap(Operand, &lhs_, &rhs_);
             }
+
+            const lhs = lhs_;
+            const rhs = rhs_;
+
 
             if (as_binop == .Ass and lhs.kind != .Register) {
                 // @note when doing assignment we are making sure that lhs is a register
@@ -411,12 +404,6 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
 
                 .Ass => {
                     try self.mov_op_to_reg(rhs, ret_reg);
-
-                    if (rhs.kind == .Register and rhs.kind.Register.id != ret_reg.id) self.reg_free(rhs.kind.Register);
-
-                    const value = get_value(self.values, inst.operands.items[0]);
-                    try self.value_change_operand(value, .{ .kind = .{ .Register = ret_reg } });
-                    std.debug.print("{} -> {} now\n", .{ inst.operands.items[0], value });
                 },
                 else => |typ| {
                     std.debug.panic("type {} is unimplemented!", .{typ});
