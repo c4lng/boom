@@ -134,11 +134,51 @@ pub fn value_change_operand(self: *Self, value: *Ir.Value, operand: Operand) !vo
         else => @panic("we need to change the value type too but that is unimplemented!"),
     }
     try self.computed_values.append(operand);
-    value.lowered_operand_idx = self.computed_values.items.len-1;
+    value.lowered_operand_idx = self.computed_values.items.len - 1;
 }
 
 const RegAllocInfo = struct { requested: Register, to_spill: Register };
 
+pub fn push_register(self: *Self, reg: Register) !void {
+    assert(reg.width == 8);
+    _ = try self.program_builder.append_fmt("   pushq %{s}\n", .{reg.to_string()});
+}
+
+pub fn pop_register(self: *Self, reg: Register) !void {
+    assert(reg.width == 8);
+    _ = try self.program_builder.append_fmt("   popq %{s}\n", .{reg.to_string()});
+}
+
+pub fn save_call_registers(self: *Self) !u9 {
+    for (1..10) |i| {
+        const as_reg = Register.make(.from_int(@intCast(i)), 8);
+        if (!self.is_reg_available(as_reg)) try self.push_register(as_reg);
+    }
+    const mark = self.registers;
+    self.registers = 0;
+    return mark;
+}
+pub fn restore_call_registers(self: *Self, mark: u9) !void {
+    self.registers = mark;
+
+    var registers: [9]Register = undefined;
+    var len: usize = 0;
+
+    for (1..10) |i| {
+        const as_reg = Register.make(.from_int(@intCast(i)), 8);
+        if (!self.is_reg_available(as_reg)) {
+            registers[len] = as_reg;
+            len += 1;
+        }
+    }
+    var it: isize = @as(isize,@intCast(len)) - 1;
+    while (it >= 0) {
+        const register = registers[@intCast(it)];
+        std.debug.print("reg {s}\n", .{register.to_string()});
+        try self.pop_register(register);
+        it -= 1;
+    }
+}
 pub fn ensure_reg(self: *Self, operand: Operand, to: Register) !RegAllocInfo {
     switch (operand.kind) {
         .Register => |as_reg| return .{ .requested = as_reg, .to_spill = ._null() },
@@ -301,13 +341,18 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
 
             std.debug.print("lhs = {}, rhs = {}\n", .{ lhs, rhs });
 
-            if (as_binop != .Div and as_binop != .Ass and
+            if (as_binop.is_identity() and
                 lhs.kind == .Immediate and (rhs.kind == .Register or rhs.kind == .Memory))
-            {
-                // if one side is register make it lhs
-                const temp = lhs;
-                lhs = rhs;
-                rhs = temp;
+            { // if one side is register make it lhs
+                std.mem.swap(Operand, &lhs, &rhs);
+            }
+
+            if (as_binop == .Ass and lhs.kind != .Register) {
+                // @note when doing assignment we are making sure that lhs is a register
+                // so that's why we are moving whatever op we have as lhs to a register
+                // but this does not matter as we do not care about the value of lhs as
+                // we are going to replace it anyways
+                _ = try self.program_builder.append_fmt("   # @Assignment extra mov that doesn't matter\n", .{});
             }
             const lhs_reg_info = try self.ensure_reg(lhs, if (as_binop == .Div) .make(.A, 4) else ._null());
             const lhs_compiled = try self.scratch_buffer.append_fmt("%{s}", .{lhs_reg_info.requested.to_string()});
@@ -357,22 +402,21 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
                         .Lt => "setl",
                         else => unreachable,
                     };
+                    const cmp_result_reg = self.reg_alloc(1);
                     _ = try self.program_builder.append_fmt("   cmp {s}, {s}\n", .{ rhs_compiled, lhs_compiled });
-                    const ret_reg_downcasted = ret_reg.downcast(1);
-                    _ = try self.program_builder.append_fmt("   {s} %{s}\n", .{ cmp_set_inst, ret_reg_downcasted.to_string() });
-                    _ = try self.program_builder.append_fmt("   movzbl %{s}, %{s}\n", .{ ret_reg_downcasted.to_string(), ret_reg.upcast(4).to_string() });
+                    _ = try self.program_builder.append_fmt("   {s} %{s}\n", .{ cmp_set_inst, cmp_result_reg.to_string() });
+                    _ = try self.program_builder.append_fmt("   movzbl %{s}, %{s}\n", .{ cmp_result_reg.to_string(), cmp_result_reg.upcast(4).to_string() });
+                    ret_reg = cmp_result_reg;
                 },
 
                 .Ass => {
-                    const save_reg = self.reg_alloc(4);
-                    _ = try self.program_builder.append_fmt("   mov {s}, %{s}\n", .{ rhs_compiled, save_reg.to_string() });
-                    if (rhs.kind == .Register) self.reg_free(rhs.kind.Register);
+                    try self.mov_op_to_reg(rhs, ret_reg);
+
+                    if (rhs.kind == .Register and rhs.kind.Register.id != ret_reg.id) self.reg_free(rhs.kind.Register);
 
                     const value = get_value(self.values, inst.operands.items[0]);
-                    try self.value_change_operand(value, .{ .kind = .{ .Register = save_reg } });
-                    std.debug.print("{} -> {} now\n", .{inst.operands.items[0], value});
-
-                    ret_reg = save_reg;
+                    try self.value_change_operand(value, .{ .kind = .{ .Register = ret_reg } });
+                    std.debug.print("{} -> {} now\n", .{ inst.operands.items[0], value });
                 },
                 else => |typ| {
                     std.debug.panic("type {} is unimplemented!", .{typ});
@@ -412,20 +456,17 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
             }
         },
         .ProcCall => |call_name| {
-            var used_regs: ArrayListManaged(RegAllocInfo) = .init(self.allocator);
+            std.debug.print("pushing the registers and shit\n", .{});
+            self.print_allocated_registers();
+            const register_mark = try self.save_call_registers();
+
             for (inst.operands.items, 0..) |param_expr_idx, idx| {
                 const value = get_value(self.values, param_expr_idx);
                 const operand = try self.resolve_value(value, bb);
-
-                // TODO(shahzad): @bug @priority support for args on stack
                 const call_reg = LinuxCallingConvRegisters[idx];
-                // TODO(shahzad)!!!!!: @bug are we really doing this bruh
-                const reg_info = self.reg_alloc2(call_reg.id, 4);
-                assert(reg_info.requested.id != .NULL);
-                try used_regs.append(reg_info);
-
                 try self.mov_op_to_reg(operand, call_reg);
             }
+
             var is_plt: []const u8 = "";
             for (mod.proc_decls.items) |proc_decl| {
                 if (std.mem.eql(u8, proc_decl.name, call_name)) {
@@ -434,17 +475,11 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
                     }
                 }
             }
+
             _ = try self.program_builder.append_fmt("   xor %rax, %rax\n", .{});
             _ = try self.program_builder.append_fmt("   call {s}{s}\n", .{ call_name, is_plt });
+            try self.restore_call_registers(register_mark);
 
-            for (used_regs.items) |info| {
-                if (info.to_spill.id != .NULL) {
-                    try self.mov_reg_to_reg(info.to_spill, info.requested);
-                    self.reg_free(info.to_spill);
-                } else {
-                    self.reg_free(info.requested);
-                }
-            }
             // we don't support arguments
             return .{ .kind = .Void };
         },

@@ -19,7 +19,7 @@ const keywords = [_]struct { []const u8, TokenKind }{
 };
 
 // @TODO(shahzad): this should be a common thingy
-pub const Operators = enum {
+pub const Operator = enum {
     Ass,
     Add,
     Sub,
@@ -35,6 +35,14 @@ pub const Operators = enum {
     Gt,
     LtEq,
     GtEq,
+
+    pub fn is_identity(op: Operator) bool {
+        switch (op) {
+            .Add, .Mul => return true,
+            else => return false,
+        }
+        unreachable;
+    }
 };
 
 pub const TokenKind = union(enum) {
@@ -43,7 +51,7 @@ pub const TokenKind = union(enum) {
     LiteralString: []const u8,
     LiteralFloat: f64,
 
-    Op: Operators,
+    Op: Operator,
 
     //identifier
     Ident: void,

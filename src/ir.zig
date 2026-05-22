@@ -168,7 +168,7 @@ pub fn set_value(values: ArrayListManaged(Value), idx: usize, value: Value) void
 // TODO(shahzad): @scope this should hold the type that ts resolves to
 pub const Instruction = struct {
     pub const Type = union(enum) {
-        BinOp: Lexer.Operators,
+        BinOp: Lexer.Operator,
         Goto: isize, // -1 is goto end
         ConditionalJump: isize, // condition is in operands
         ForLoop: struct {
@@ -216,6 +216,10 @@ pub const Instruction = struct {
                         .Sub => @subWithOverflow(lhs_as_const, rhs_as_const).@"0",
                         .Mul => @mulWithOverflow(lhs_as_const, rhs_as_const).@"0",
                         .Div => @divTrunc(lhs_as_const, rhs_as_const),
+
+                        // @NOTE: we will have to go through every instruction that
+                        // uses the old operand and patch it to use the new "self.produces"
+                        .Ass => @panic("unreachable idk how to implement this"), // we don't know
                         else => unreachable, // unimplemented
                     };
 
@@ -229,6 +233,7 @@ pub const Instruction = struct {
                 }
                 unreachable;
             },
+            .ProcCall => {},
             .Return => {}, // we can't peephole return bruh
             else => unreachable,
         }
