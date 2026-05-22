@@ -125,6 +125,18 @@ pub const Operand = struct {
         return compiled;
     }
 };
+
+pub fn value_change_operand(self: *Self, value: *Ir.Value, operand: Operand) !void {
+    switch (operand.kind) {
+        .Register => {
+            value.type = .Result;
+        },
+        else => @panic("we need to change the value type too but that is unimplemented!"),
+    }
+    try self.computed_values.append(operand);
+    value.lowered_operand_idx = self.computed_values.items.len-1;
+}
+
 const RegAllocInfo = struct { requested: Register, to_spill: Register };
 
 pub fn ensure_reg(self: *Self, operand: Operand, to: Register) !RegAllocInfo {
@@ -175,7 +187,7 @@ pub fn reg_alloc2(self: *Self, id: Register.Id, width: u8) RegAllocInfo {
     const bit_idx = @as(u9, @intCast(1)) << @intCast(id.to_int() - 1);
     self.registers ^= bit_idx;
     std.log.info("bit_idx: {x}", .{bit_idx});
-    std.log.info("allocated register {} state :{x}", .{ id, self.registers });
+    std.log.info("allocated register {} state :{b}", .{ id, self.registers });
     assert(!self.is_reg_available(reg));
     return .{ .requested = reg, .to_spill = ._null() };
 }
@@ -203,6 +215,18 @@ pub fn reg_free(self: *Self, reg: Register) void {
 
     self.registers ^= mask;
     assert(self.is_reg_available(reg));
+}
+
+pub fn print_allocated_registers(self: *Self) void {
+    std.debug.print("--------------------\n", .{});
+    std.debug.print("register {b}\n", .{self.registers});
+    for (1..10) |i| {
+        const as_reg = Register.make(.from_int(@intCast(i)), 4);
+        if (!self.is_reg_available(as_reg)) {
+            std.debug.print("register {} is available!\n", .{as_reg.id});
+        }
+    }
+    std.debug.print("--------------------\n", .{});
 }
 
 pub fn init(allocator: Allocator, values: ArrayListManaged(Ir.Value)) !Self {
@@ -269,13 +293,17 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
     const mark = self.scratch_buffer.mark();
     defer self.scratch_buffer.reset(mark);
     // TODO(shahzad): @bug @priority free rhs register
+    std.debug.print("this is the instruction we are compiling {}\n", .{inst});
     switch (inst.type) {
         .BinOp => |as_binop| {
             var lhs = try self.resolve_value(get_value(self.values, inst.operands.items[0]), bb);
             var rhs = try self.resolve_value(get_value(self.values, inst.operands.items[1]), bb);
 
             std.debug.print("lhs = {}, rhs = {}\n", .{ lhs, rhs });
-            if (as_binop != .Div and lhs.kind == .Immediate and (rhs.kind == .Register or rhs.kind == .Memory)) {
+
+            if (as_binop != .Div and as_binop != .Ass and
+                lhs.kind == .Immediate and (rhs.kind == .Register or rhs.kind == .Memory))
+            {
                 // if one side is register make it lhs
                 const temp = lhs;
                 lhs = rhs;
@@ -335,6 +363,17 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
                     _ = try self.program_builder.append_fmt("   movzbl %{s}, %{s}\n", .{ ret_reg_downcasted.to_string(), ret_reg.upcast(4).to_string() });
                 },
 
+                .Ass => {
+                    const save_reg = self.reg_alloc(4);
+                    _ = try self.program_builder.append_fmt("   mov {s}, %{s}\n", .{ rhs_compiled, save_reg.to_string() });
+                    if (rhs.kind == .Register) self.reg_free(rhs.kind.Register);
+
+                    const value = get_value(self.values, inst.operands.items[0]);
+                    try self.value_change_operand(value, .{ .kind = .{ .Register = save_reg } });
+                    std.debug.print("{} -> {} now\n", .{inst.operands.items[0], value});
+
+                    ret_reg = save_reg;
+                },
                 else => |typ| {
                     std.debug.panic("type {} is unimplemented!", .{typ});
                 }, // unimplemented
@@ -558,6 +597,8 @@ pub fn compile_mod(self: *Self, mod: *Ir.Module) !void {
     }
 
     try self.compile_data_section();
+
+    self.print_allocated_registers();
 }
 pub fn get_generated_assembly(self: *const Self) []const u8 {
     return self.program_builder.string.items;
