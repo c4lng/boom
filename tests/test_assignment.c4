@@ -2,5 +2,6 @@ proc printf(fmt: ^x8) -> void;
 proc main() -> void {
   let b: x32 = 1;
   b = b + b + b;
+  b = b + b + b;
   printf("%d\n", b);
 }

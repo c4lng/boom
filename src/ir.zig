@@ -8,14 +8,22 @@ const Lexer = @import("lexer.zig");
 
 pub const Module = @This();
 
-const SymbolTable = std.StringHashMap(usize);
+const SymbolSet = []usize;
+
+const SymbolTable = std.StringHashMap(ArrayListManaged(usize));
 nb_consts_strs: usize = 0,
 nb_basic_blocks: usize = 0,
 values: ArrayListManaged(Value),
 procs: ArrayListManaged(Procedure),
 proc_decls: ArrayListManaged(ProcedureDecl),
-symbols: SymbolTable = undefined,
+symbols: SymbolTable,
 allocator: Allocator,
+
+pub fn put_global_symbol(self: *Module, sym_name: []const u8, value_idx: usize) !void {
+    var za_array: ArrayListManaged(usize) = .init(self.allocator);
+    try za_array.append(value_idx);
+    try self.symbols.put(sym_name, za_array);
+}
 
 pub fn init(allocator: Allocator) !Module {
     var this: Module = .{
@@ -32,6 +40,7 @@ pub fn init(allocator: Allocator) !Module {
 pub const Options = struct {
     enable_peephole: bool = false,
 };
+
 pub const ProcedureDecl = struct {
     name: []const u8,
     mod: *Module,
@@ -69,6 +78,15 @@ pub const Procedure = struct {
     }
 };
 
+const Symbol = struct {
+    name: []u8,
+    id: usize,
+
+    pub fn init(name: []u8, id: usize) Symbol {
+        return .{ .name = name, .id = id };
+    }
+};
+
 const SymbolTableStack = struct {
     allocator: Allocator,
     inner: ArrayListManaged(SymbolTable),
@@ -88,14 +106,15 @@ const SymbolTableStack = struct {
             std.log.debug("", .{});
         }
     }
-    pub fn get_sym_value_idx(self: *SymbolTableStack, sym_name: []const u8) ?usize {
+    pub fn get_symbolset(self: *SymbolTableStack, sym_name: []const u8) ?SymbolSet {
         var last_idx: isize = @intCast(self.inner.items.len - 1);
-        var value_idx: ?usize = null;
+        var value_idx: ?SymbolSet = null;
         while (last_idx >= 0) : (last_idx -= 1) {
             const sym_table = self.inner.items[@intCast(last_idx)];
-            value_idx = sym_table.get(sym_name) orelse {
+            const dyn_array_typ_shit = sym_table.get(sym_name) orelse {
                 continue;
             };
+            value_idx = dyn_array_typ_shit.items;
             break;
         }
         return value_idx;
@@ -103,20 +122,10 @@ const SymbolTableStack = struct {
     pub fn append_sym(self: *SymbolTableStack, sym_name: []const u8, value_idx: usize) !void {
         var last = &self.inner.items[self.inner.items.len - 1];
         const entry = try last.getOrPut(sym_name);
-        assert(entry.found_existing != true); // bug in type checking
-        entry.value_ptr.* = value_idx;
-    }
-    pub fn set_sym(self: *SymbolTableStack, sym_name: []const u8, value_idx: usize) !void {
-        var last_idx: isize = @intCast(self.inner.items.len - 1);
-        while (last_idx >= 0) : (last_idx -= 1) {
-            const sym_table = self.inner.items[@intCast(last_idx)];
-            const prev_value_idx = sym_table.getPtr(sym_name) orelse {
-                continue;
-            };
-            prev_value_idx.* = value_idx;
-            return;
+        if (entry.found_existing != true) {
+            entry.value_ptr.* = .init(self.allocator);
         }
-        try self.append_sym(sym_name, value_idx);
+        try entry.value_ptr.append(value_idx);
     }
 
     pub fn new_frame(self: *SymbolTableStack) !void {
@@ -127,8 +136,10 @@ const SymbolTableStack = struct {
 pub fn print_symbol_table(mod: Module, sym_table: SymbolTable) void {
     var iter = sym_table.iterator();
     while (iter.next()) |ent| {
-        const value = get_value(mod.values, ent.value_ptr.*);
-        std.log.debug("sym_table entry : {s} -> {}\n", .{ ent.key_ptr.*, value });
+        for (ent.value_ptr.items, 0..) |it, it_index| {
+            const value = get_value(mod.values, it);
+            std.log.debug("sym_table entry : {s}_{} -> {}\n", .{ ent.key_ptr.*, it_index, value });
+        }
     }
 }
 
@@ -172,12 +183,7 @@ pub const Instruction = struct {
         BinOp: Lexer.Operator,
         Goto: isize, // -1 is goto end
         ConditionalJump: isize, // condition is in operands
-        ForLoop: struct {
-            type: enum {
-                NonTerminating,
-                SingleArg,
-                TripleArg,
-            },
+        Block: struct {
             basic_block_idx: usize,
         },
         Value,
@@ -271,13 +277,13 @@ pub fn parse_expr(mod: *Module, proc: *Procedure, expr: *const Ast.Expression, i
             return mod.values.items.len - 1;
         },
         .Var => |as_var| {
-            const var_as_value = proc.symbol_table_stack.get_sym_value_idx(as_var);
+            const var_as_value = proc.symbol_table_stack.get_symbolset(as_var);
             if (var_as_value == null) {
                 std.log.err("symbol '{s}' not present in symbol table", .{as_var});
                 proc.symbol_table_stack.print_sym_table_stack(mod.*);
                 @panic("symbol not present in the table!");
             }
-            return var_as_value.?;
+            return var_as_value.?[var_as_value.?.len - 1];
         },
 
         .Call => |as_call| {
@@ -302,7 +308,7 @@ pub fn parse_expr(mod: *Module, proc: *Procedure, expr: *const Ast.Expression, i
 
                 @panic("symbol not present in the table!");
             }
-            return proc_return_value.?;
+            return proc_return_value.?.items[0];
         },
 
         .LiteralString => |as_str| {
@@ -310,35 +316,60 @@ pub fn parse_expr(mod: *Module, proc: *Procedure, expr: *const Ast.Expression, i
             mod.nb_consts_strs += 1;
             return mod.values.items.len - 1;
         },
-        .WhileLoop => |as_while| {
-            const basic_block: *BasicBlock = try proc.block.basic_blocks.addOne();
-            const basic_block_idx = proc.block.basic_blocks.items.len - 1;
-            basic_block.* = .init(mod.allocator, mod.nb_basic_blocks, false);
+        .IfCondition => |as_while| {
+            const while_block: *BasicBlock = try proc.block.basic_blocks.addOne();
+            const while_block_idx = proc.block.basic_blocks.items.len - 1;
+            while_block.* = .init(mod.allocator, mod.nb_basic_blocks, false);
             mod.nb_basic_blocks += 1;
 
-            // insts are like this
-            // while_loop (another block){
-            // condition
-            // conditional jump
-            // block
-            // Goto Start
-            // }
+            // here is how we do this shit
+            // we first parse the condition in newly created basic block then we add
+            // the instruction in our original block to make the shit jump to the
+            // block that is of while, when we jump in the while block the first
+            // instruction is compare following ConditionalJump and other things
 
-            var while_inst: Instruction = try .init(mod.allocator, .{ .ForLoop = .{
-                .type = .SingleArg,
-                .basic_block_idx = basic_block_idx,
+            const value_id = try mod.parse_expr(proc, as_while.if_.condition, &while_block.insts);
+
+            const condition: Instruction = try .init(mod.allocator, .{ .Block = .{
+                .basic_block_idx = while_block_idx,
             } }, null, &[_]usize{});
-            try insts.append(while_inst);
 
-            const value_id = try mod.parse_expr(proc, as_while.condition, &basic_block.insts);
-            try while_inst.operands.append(value_id);
+            try insts.append(condition);
 
-            try basic_block.insts.append(try .init(mod.allocator, .{ .ConditionalJump = -1 }, null, &[_]usize{value_id}));
+            try while_block.insts.append(try .init(mod.allocator, .{ .ConditionalJump = -1 }, null, &[_]usize{value_id}));
 
-            const while_block = try mod._make_block_from_expr(as_while.expression);
-            try mod.parse_bb(basic_block, proc, &while_block);
+            const original_while_block = try mod._make_block_from_expr(as_while.if_.expression);
+            try mod.parse_bb(while_block, proc, &original_while_block);
 
-            try basic_block.insts.append(try .init(mod.allocator, .{ .Goto = 0 }, null, &[_]usize{}));
+            try while_block.insts.append(try .init(mod.allocator, .{ .Goto = -1 }, null, &[_]usize{}));
+            return undefined;
+        },
+        .WhileLoop => |as_while| {
+            const while_block: *BasicBlock = try proc.block.basic_blocks.addOne();
+            const while_block_idx = proc.block.basic_blocks.items.len - 1;
+            while_block.* = .init(mod.allocator, mod.nb_basic_blocks, false);
+            mod.nb_basic_blocks += 1;
+
+            // here is how we do this shit
+            // we first parse the condition in newly created basic block then we add
+            // the instruction in our original block to make the shit jump to the
+            // block that is of while, when we jump in the while block the first
+            // instruction is compare following ConditionalJump and other things
+
+            const value_id = try mod.parse_expr(proc, as_while.condition, &while_block.insts);
+
+            const condition: Instruction = try .init(mod.allocator, .{ .Block = .{
+                .basic_block_idx = while_block_idx,
+            } }, null, &[_]usize{});
+
+            try insts.append(condition);
+
+            try while_block.insts.append(try .init(mod.allocator, .{ .ConditionalJump = -1 }, null, &[_]usize{value_id}));
+
+            const original_while_block = try mod._make_block_from_expr(as_while.expression);
+            try mod.parse_bb(while_block, proc, &original_while_block);
+
+            try while_block.insts.append(try .init(mod.allocator, .{ .Goto = 0 }, null, &[_]usize{}));
             return undefined;
         },
         else => |kind| {
@@ -374,7 +405,7 @@ pub fn parse_binop(mod: *Module, proc: *Procedure, bin_op: *const Ast.BinaryOper
     if (bin_op.op == .Ass) {
         if (bin_op.lhs.* == .Var) {
             const var_name = bin_op.lhs.Var;
-            try proc.symbol_table_stack.set_sym(var_name, dest);
+            try proc.symbol_table_stack.append_sym(var_name, dest);
         }
     }
     try insts.append(try .init(proc.mod.allocator, .{ .BinOp = bin_op.op }, dest, &[_]usize{ lhs, rhs }));
@@ -399,7 +430,7 @@ pub fn parse_bb(mod: *Module, basic_block: *BasicBlock, proc: *Procedure, ast_bl
                     try mod.values.append(.{ .type = .Result });
                     break :blk mod.values.items.len - 1;
                 };
-                try proc.symbol_table_stack.set_sym(var_name, value_id);
+                try proc.symbol_table_stack.append_sym(var_name, value_id);
             },
             else => unreachable,
         }
@@ -426,7 +457,7 @@ pub fn compile_proc(mod: *Module, proc_def: *const Ast.ProcDef, opts: Options) !
 
     var proc: Procedure = .init(mod, proc_name, value_idx);
 
-    try mod.symbols.put(proc_name, value_idx);
+    try mod.put_global_symbol(proc_name, value_idx);
 
     try proc.symbol_table_stack.new_frame();
     try mod.parse_block(&proc, proc_def.block, &proc.block);
@@ -445,7 +476,7 @@ pub fn compile_proc_decl(mod: *Module, proc_decl: *const Ast.ProcDecl) !Procedur
     } else 0;
 
     const proc: ProcedureDecl = .init(mod, proc_name, value_idx);
-    try mod.symbols.put(proc_name, value_idx);
+    try mod.put_global_symbol(proc_name, value_idx);
 
     return proc;
 }
@@ -462,5 +493,8 @@ pub fn compile_mod(allocator: Allocator, module: *Ast.Module, opts: Options) !Mo
         const proc = try mod.compile_proc(it, opts);
         try mod.procs.append(proc);
     }
+
+    mod.procs.items[0].symbol_table_stack.print_sym_table_stack(mod);
+
     return mod;
 }

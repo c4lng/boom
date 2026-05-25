@@ -481,8 +481,7 @@ pub fn compile_inst(self: *Self, mod: *Ir.Module, inst: *const Ir.Instruction, p
             // we don't support arguments
             return .{ .kind = .Void };
         },
-        .ForLoop => |as_loop| {
-            assert(as_loop.type == .SingleArg);
+        .Block => |as_loop| {
             const blk_start_label = try self.t_make_label(as_loop.basic_block_idx, "BLK");
             _ = try self.program_builder.append_fmt("{s}:\n", .{blk_start_label});
             try self.compile_bb(mod, proc, as_loop.basic_block_idx, true);

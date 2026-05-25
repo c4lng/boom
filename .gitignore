@@ -1,0 +1,7 @@
+.zig-cache/
+zig-out/
+asm/
+build/
+docs/
+.test_output/
+tests/.gitignore

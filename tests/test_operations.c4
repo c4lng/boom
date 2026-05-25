@@ -1,6 +1,6 @@
 proc printf(fmt: ^x8, arg: x32) -> void;
 
 proc main() -> void {
-  let z: x32 = 34 + 13 + 66 / 3;
+  let z: x32 = 10 - 20 + 10;
   printf("z is %d\n", z );
 }
